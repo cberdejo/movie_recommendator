@@ -11,6 +11,8 @@
 ![LightRag](https://img.shields.io/badge/LightRag-FF6B6B?style=for-the-badge)
 ![LiteLLM](https://img.shields.io/badge/LiteLLM-7C3AED?style=for-the-badge&logo=openai&logoColor=white)
 
+![working_project](screenshot/example.png)
+
 ## Table of Contents
 - [Project Overview](#project-overview)
 - [Project Structure](#project-structure)
