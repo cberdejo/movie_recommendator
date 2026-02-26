@@ -1,0 +1,10 @@
+model_list:
+  - model_name: primary-llm  
+    litellm_params:
+      model: ollama/llama3.1  
+      api_base: http://ollama:11434 
+
+  - model_name: secondary-llm
+    litellm_params:
+      model: ollama/llama3.2:1b
+      api_base: http://ollama:11434
