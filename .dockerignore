@@ -1,0 +1,62 @@
+# --- Python cache / build artifacts (any depth)
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.log
+
+# Build dists / metadata
+build
+dist
+*.egg-info
+.eggs
+
+# venvs (any depth)
+.venv
+venv
+
+# dotenvs (files) — incluye variantes comunes
+.env
+*.env
+*.env.*
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*~
+
+# VCS
+.git
+.gitignore
+
+# Docker files (si no los vas a COPY desde el contexto)
+.dockerignore
+docker-compose.yml
+
+# SQLite / local db
+*.db
+*.sqlite3
+
+# IDE
+.vscode
+.idea
+*.iml
+
+# Documentation
+README.md
+LICENSE
+
+# Models / data (si son grandes)
+models/
+*.csv
+*.json
+*.parquet
+
+# Temporary files
+*.tmp
+*.temp
+.cache
