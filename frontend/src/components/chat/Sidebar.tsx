@@ -107,7 +107,7 @@ const Sidebar = ({ useCase = "movies", isOpen, onClose }: SidebarProps) => {
                 <ConversationSkeleton />
               </>
             ) : (
-              conversations.map((conv) => (
+              (Array.isArray(conversations) ? conversations : []).map((conv) => (
                 <ConversationItem
                   key={conv.ID}
                   conversation={conv}

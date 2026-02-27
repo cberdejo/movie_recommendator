@@ -55,12 +55,15 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
       const url = useCase 
         ? `${SERVER_ENDPOINTS.conversations}?use_case=${useCase}`
         : SERVER_ENDPOINTS.conversations;
-      const [conversations] = await Promise.all([
-        apiFetch(url),
-      ]);
+      const data = await apiFetch<unknown>(url);
+      const list = Array.isArray(data)
+        ? data
+        : (data && typeof data === "object" && "conversations" in data
+            ? (data as { conversations: ConversationType[] }).conversations
+            : []);
 
       set({
-        conversations,
+        conversations: Array.isArray(list) ? list : [],
         isInitialLoading: false,
       });
     } catch (error) {
