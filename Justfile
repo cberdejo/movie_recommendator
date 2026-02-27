@@ -17,6 +17,9 @@ run-backend:
 check-backend:
     #!/usr/bin/env bash
     cd backend && uv sync --quiet && uv run ruff format --check .
-
+#install frontend dependencies
+install-frontend:
+    cd frontend && npm install
+#run frontend
 run-frontend:
     cd frontend && npm run dev
