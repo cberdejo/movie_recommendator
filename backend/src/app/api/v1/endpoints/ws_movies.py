@@ -10,4 +10,13 @@ router = APIRouter()
 async def ws_movies_endpoint(
     websocket: WebSocket, db: AsyncSession = Depends(get_session)
 ):
+    """
+    This endpoint is a WebSocket endpoint for movie recommendations.
+    Args:
+        websocket: The WebSocket connection.
+        db: The database session.
+    Returns:
+        A 200 OK response if the WebSocket connection is accepted.
+        A 500 Internal Server Error response if there is an error accepting the WebSocket connection.
+    """
     await ws_handler_movies(websocket, db=db)

@@ -73,6 +73,18 @@ async def list_conversations(
     return result.all()
 
 
+async def update_conversation_title(
+    conversation_id: int, title: str, db: AsyncSession
+) -> Conversation | None:
+    convo = await db.get(Conversation, conversation_id)
+    if convo:
+        convo.title = title.strip() or convo.title
+        await db.commit()
+        await db.refresh(convo)
+        return convo
+    return None
+
+
 async def delete_conversation(conversation_id: int, db: AsyncSession) -> bool:
     convo = await db.get(Conversation, conversation_id)
     if convo:

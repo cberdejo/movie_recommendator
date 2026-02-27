@@ -14,6 +14,10 @@ class CreateConversationResponse(BaseModel):
     model: str
 
 
+class UpdateConversationRequest(BaseModel):
+    title: str
+
+
 class ErrorResponse(BaseModel):
     message: str
 
