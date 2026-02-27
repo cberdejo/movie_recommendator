@@ -262,7 +262,9 @@ def _build_metadata(item: MediaItem) -> dict:
     return {k: v for k, v in payload.items() if v not in (None, "", [], {})}
 
 
-def create_emb_db_from_csvs(csv_movies_only: str | Path, csv_mixed_movies_tv: str | Path) -> int:
+def create_emb_db_from_csvs(
+    csv_movies_only: str | Path, csv_mixed_movies_tv: str | Path
+) -> int:
     """
     Loads the datasets, builds the corpora and indexes them in Qdrant using HybridSearcher.
     """
@@ -400,4 +402,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

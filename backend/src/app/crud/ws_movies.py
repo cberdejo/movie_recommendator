@@ -5,12 +5,16 @@ WebSocket handler for movie recommendations.
 import time
 
 from fastapi import WebSocket, WebSocketDisconnect
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.websockets import WebSocketState
 
 from app.assistants.movie_assistant import build_app
-from app.crud.conversation_crud import create_conversation, add_message
+from app.crud.conversation_crud import (
+    create_conversation,
+    add_message,
+    get_conversation_with_messages,
+)
 from app.schemas.ws_schemas import WSRequest, WSResponse
 from app.core.config.logger import get_logger
 
@@ -25,6 +29,7 @@ async def _send_if_open(websocket: WebSocket, text: str) -> None:
         await websocket.send_text(text)
     except (WebSocketDisconnect, RuntimeError):
         pass
+
 
 # Graph LangGraph: a single instance, all generation passes through it
 app_graph = build_app()
@@ -120,7 +125,7 @@ async def _generate_and_stream_langgraph(
     convo_id: int,
     db: AsyncSession,
 ):
-    """Generate and stream the assistant's response using LangGraph."""
+    """Generate and stream the assistant's response using LangGraph and Postgres history."""
     req_id = f"movies-c{convo_id}-t{int(time.time() * 1000)}"
     start_ts = time.time()
 
@@ -137,18 +142,36 @@ async def _generate_and_stream_langgraph(
             WSResponse(type="thinking_start", content=None).model_dump_json(),
         )
 
-        # Configure LangGraph with thread_id based on conversation_id
-        config = {"configurable": {"thread_id": str(convo_id)}}
-        inputs = {"messages": [HumanMessage(content=user_message)]}
+        # 1. Retrieve the entire conversation history from the database.
+        # the last message in this list will already be the current `user_message`.
+        db_messages = await get_conversation_with_messages(
+            conversation_id=convo_id, db=db
+        )
+
+        # 2. Format the messages so that LangChain understands them.
+        langchain_messages = []
+        for msg in db_messages.messages:
+            if msg.role == "user":
+                langchain_messages.append(HumanMessage(content=msg.content))
+            elif msg.role in [
+                "assistant",
+                "model",
+            ]:
+                langchain_messages.append(AIMessage(content=msg.content))
+
+        # If for some reason the query fails or comes empty (it shouldn't),
+        # we ensure that at least the current message is sent.
+        if not langchain_messages:
+            langchain_messages = [HumanMessage(content=user_message)]
+
+        inputs = {"messages": langchain_messages}
 
         assistant_chunks: list[str] = []
         final_response = ""
         thinking_end_sent = False
 
-        # Stream events from LangGraph
-        async for event in app_graph.astream_events(
-            inputs, config=config, version="v1"
-        ):
+        # 4. Stream events from LangGraph
+        async for event in app_graph.astream_events(inputs, config={}, version="v1"):
             kind = event["event"]
 
             if kind == "on_chat_model_stream":
@@ -162,7 +185,9 @@ async def _generate_and_stream_langgraph(
                             thinking_end_sent = True
                             await _send_if_open(
                                 websocket,
-                                WSResponse(type="thinking_end", content=None).model_dump_json(),
+                                WSResponse(
+                                    type="thinking_end", content=None
+                                ).model_dump_json(),
                             )
                         assistant_chunks.append(content)
                         await _send_if_open(
@@ -224,5 +249,7 @@ async def _generate_and_stream_langgraph(
         logger.exception("[%s] LangGraph generation error", req_id)
         await _send_if_open(
             websocket,
-            WSResponse(type="error", content=f"Generation error: {e}").model_dump_json(),
+            WSResponse(
+                type="error", content=f"Generation error: {e}"
+            ).model_dump_json(),
         )

@@ -60,8 +60,7 @@ llm_secondary = ChatOpenAI(
     max_retries=2,
 )
 
-# Memory instance for conversation persistence
-memory = MemorySaver()
+
 # HybridSearcher instance
 searcher = HybridSearcher(
     url=qdrantsettings.qdrant_endpoint, collection_name=qdrantsettings.qdrant_collection
@@ -304,4 +303,4 @@ def build_app():
     workflow.add_edge("generate", END)
     workflow.add_edge("generate_general", END)
 
-    return workflow.compile(checkpointer=memory)
+    return workflow.compile()

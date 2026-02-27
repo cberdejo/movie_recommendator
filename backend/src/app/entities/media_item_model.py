@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Literal
 
+
 class MediaItem(BaseModel):
     title: str = Field(..., description="Title of the audiovisual work")
     director: str | None = Field(None, description="Primary director (if known)")

@@ -2,6 +2,7 @@ import os
 from enum import Enum
 from pydantic_settings import BaseSettings
 
+
 class LiteLLMSettings(BaseSettings):
     # Base URL of LiteLLM (e.g. http://localhost:4000). We expose openai_base_url with /v1 for ChatOpenAI.
     url: str = os.getenv("LITELLM_URL", "http://localhost:4000")
@@ -16,6 +17,7 @@ class LiteLLMSettings(BaseSettings):
         """URL for OpenAI client: base + /v1 (LiteLLM serves at /v1/chat/completions)."""
         base = self.url.rstrip("/")
         return f"{base}/v1" if not base.endswith("/v1") else base
+
 
 class QdrantSettings(BaseSettings):
     # Core connection settings
