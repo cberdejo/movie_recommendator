@@ -1,7 +1,7 @@
 import ChatInput from "./ChatInput.tsx";
 import MessageComponent from "./Message.tsx";
-import { useEffect, useRef } from "react";
-import { Menu } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Menu, Pencil } from "lucide-react";
 
 import { useNavigate } from "react-router-dom";
 import { useConversationStore } from "../../store/conversationstore.ts";
@@ -34,7 +34,7 @@ const ChatView = ({
     isConnected,
   } = useWebSocket();
 
- 
+
   const selectedConversation = useConversationStore(
     (state) => state.selectedConversation
   );
@@ -52,6 +52,32 @@ const ChatView = ({
   const getConversation = useConversationStore(
     (state) => state.getConversation
   );
+  const updateConversationTitle = useConversationStore(
+    (state) => state.updateConversationTitle
+  );
+
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editTitleValue, setEditTitleValue] = useState("");
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isEditingTitle) {
+      setEditTitleValue(selectedConversation?.Title ?? "");
+      titleInputRef.current?.focus();
+    }
+  }, [isEditingTitle, selectedConversation?.Title]);
+
+  const handleSaveTitle = async () => {
+    if (!id || !editTitleValue.trim()) {
+      setIsEditingTitle(false);
+      return;
+    }
+    try {
+      await updateConversationTitle(id, editTitleValue.trim());
+    } finally {
+      setIsEditingTitle(false);
+    }
+  };
 
   // Detect when user manually scrolls and prevent auto-scroll while they're interacting
   useEffect(() => {
@@ -62,7 +88,7 @@ const ChatView = ({
 
     const handleScrollStart = () => {
       isUserScrollingRef.current = true;
-      
+
       // Clear any existing timeout
       if (userScrollTimeout) {
         clearTimeout(userScrollTimeout);
@@ -80,7 +106,7 @@ const ChatView = ({
     // Use both mousedown and touchstart to detect when user begins scrolling
     container.addEventListener('mousedown', handleScrollStart);
     container.addEventListener('touchstart', handleScrollStart);
-    
+
     // Use both mouseup and touchend to detect when user stops scrolling
     container.addEventListener('mouseup', handleScrollEnd);
     container.addEventListener('touchend', handleScrollEnd);
@@ -90,7 +116,7 @@ const ChatView = ({
       container.removeEventListener('touchstart', handleScrollStart);
       container.removeEventListener('mouseup', handleScrollEnd);
       container.removeEventListener('touchend', handleScrollEnd);
-      
+
       if (userScrollTimeout) {
         clearTimeout(userScrollTimeout);
       }
@@ -106,14 +132,14 @@ const ChatView = ({
     const messages = selectedConversation?.Messages || [];
     const lastMessage = messages[messages.length - 1];
     const lastMessageId = lastMessage?.ID || null;
-    
+
     // Determine if this is a new message or a different conversation
     const isNewMessage = lastMessageId !== lastMessageIdRef.current;
     const isNewConversation = id !== resumedIdRef.current;
-    
+
     // Update the ref for next comparison
     lastMessageIdRef.current = lastMessageId;
-    
+
     // Only auto-scroll if:
     // 1. User is not actively scrolling OR
     // 2. This is a completely new message OR
@@ -199,22 +225,50 @@ const ChatView = ({
           </div>
         )}
 
-        <h1 className="text-xl font-semibold text-gray-200 text-center">
-          {id
-            ? selectedConversation?.Title || "Chat"
-            : useCase === "movies"
-            ? "Movie Recommendations"
-            : useCase === "reviews"
-            ? "Review Analysis"
-            : "LightRAG Chat"}
-        </h1>
+        <div className="flex-1 flex items-center justify-center min-w-0">
+          {id && selectedConversation && isEditingTitle ? (
+            <input
+              ref={titleInputRef}
+              type="text"
+              value={editTitleValue}
+              onChange={(e) => setEditTitleValue(e.target.value)}
+              onBlur={handleSaveTitle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveTitle();
+                if (e.key === "Escape") {
+                  setEditTitleValue(selectedConversation?.Title ?? "");
+                  setIsEditingTitle(false);
+                }
+              }}
+              className="w-full max-w-md px-2 py-1 text-xl font-semibold text-gray-200 bg-gray-800 border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+              aria-label="Nombre de la conversación"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => id && selectedConversation && setIsEditingTitle(true)}
+              className="group flex items-center justify-center gap-2 text-xl font-semibold text-gray-200 text-center hover:text-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500 rounded px-2"
+              aria-label="Cambiar nombre de la conversación"
+            >
+              {id
+                ? selectedConversation?.Title || "Chat"
+                : useCase === "movies"
+                  ? "Movie Recommendations"
+                  : useCase === "reviews"
+                    ? "Review Analysis"
+                    : "LightRAG Chat"}
+              {id && selectedConversation && (
+                <Pencil className="w-4 h-4 opacity-0 group-hover:opacity-70 transition-opacity" />
+              )}
+            </button>
+          )}
+        </div>
 
         {/* Connection status indicator */}
         <div className="absolute right-4 flex items-center gap-2">
           <span
-            className={`h-2 w-2 rounded-full ${
-              isConnected ? "bg-green-500" : "bg-red-500"
-            }`}
+            className={`h-2 w-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"
+              }`}
             aria-label={isConnected ? "Conectado al servidor" : "Desconectado del servidor"}
           />
           <span className="hidden sm:inline text-xs text-gray-500">
@@ -222,7 +276,7 @@ const ChatView = ({
           </span>
         </div>
       </div>
-      
+
       {/* Model Selector */}
       {/* {!id && (
         <div className="px-4 pt-4 pb-2 w-full flex justify-center border-b border-gray-800">
@@ -238,8 +292,8 @@ const ChatView = ({
       )} */}
 
       {/* Messages or Welcome Screen */}
-      <div 
-        className="flex-1 overflow-y-auto" 
+      <div
+        className="flex-1 overflow-y-auto"
         ref={messagesContainerRef}
         onScroll={() => {
           // Mark that user is scrolling when they actively scroll
@@ -274,15 +328,15 @@ const ChatView = ({
                         <div className="text-gray-400 text-sm">
                           <div className="mb-2 flex items-center gap-2">
                             <div className="flex gap-1">
-                            <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></div>
-                            <div
-                            className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"
-                            style={{ animationDelay: "300ms" }}
-                            ></div>
-                            <div
-                            className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"
-                            style={{ animationDelay: "600ms" }}
-                            ></div>
+                              <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></div>
+                              <div
+                                className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"
+                                style={{ animationDelay: "300ms" }}
+                              ></div>
+                              <div
+                                className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"
+                                style={{ animationDelay: "600ms" }}
+                              ></div>
                             </div>
                             <span className="text-xs font-medium text-purple-400">
                               Thinking...
@@ -326,18 +380,18 @@ const ChatView = ({
               {useCase === "movies" ? "🎬" : useCase === "reviews" ? "💬" : "✨"}
             </div>
             <h1 className="text-3xl font-bold text-gray-200 mb-4">
-              {useCase === "movies" 
-                ? "Movie Recommendations" 
-                : useCase === "reviews" 
-                ? "Review Analysis"
-                : "LightRAG Chat"}
+              {useCase === "movies"
+                ? "Movie Recommendations"
+                : useCase === "reviews"
+                  ? "Review Analysis"
+                  : "LightRAG Chat"}
             </h1>
             <p className="text-gray-400 max-w-md mb-8">
               {useCase === "movies"
                 ? "Ask for movie recommendations! The system uses semantic search with cosine distance to find relevant matches."
                 : useCase === "reviews"
-                ? "Paste a customer review to analyze sentiment, extract key points, and generate a response."
-                : "This use case is currently under development."}
+                  ? "Paste a customer review to analyze sentiment, extract key points, and generate a response."
+                  : "This use case is currently under development."}
             </p>
             <div className="flex flex-col items-center">
               <p className="text-gray-500 text-sm mb-2">Features:</p>
@@ -351,7 +405,7 @@ const ChatView = ({
                 <li className="flex items-center mb-1">
                   <span className={`mr-2 ${useCase === "movies" ? "text-purple-500" : useCase === "reviews" ? "text-blue-500" : "text-green-500"}`}>•</span> Chat history and conversation management
                 </li>
-               
+
               </ul>
             </div>
           </div>

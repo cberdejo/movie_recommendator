@@ -48,7 +48,7 @@ const CodeComponent = ({ inline, className, children }: CodeProps) => {
   const codeString = String(children).replace(/\n$/, "");
   const match = /language-(\w+)/.exec(className || "");
   const language = match ? match[1] : "";
-  
+
   useEffect(() => {
     // Reset copied state after 2 seconds
     if (copied) {
@@ -127,9 +127,8 @@ const MessageComponent = ({ message }: { message: MessageType }) => {
               aria-expanded={isThinkingExpanded}
             >
               <ChevronRight
-                className={`w-3 h-3 transition-transform ${
-                  isThinkingExpanded ? "rotate-90" : ""
-                }`}
+                className={`w-3 h-3 transition-transform ${isThinkingExpanded ? "rotate-90" : ""
+                  }`}
               />
               <span>
                 Thought process
@@ -155,11 +154,10 @@ const MessageComponent = ({ message }: { message: MessageType }) => {
         )}
 
         <div
-          className={`${
-            isAssistant
+          className={`${isAssistant
               ? "text-gray-300"
               : "text-gray-200 bg-gray-800/50 p-3 rounded-lg"
-          }`}
+            }`}
         >
           <Suspense fallback={<div>Loading...</div>}>
             <ReactMarkdown

@@ -24,7 +24,7 @@ const ChatInput = ({ conversationId }: ChatInputProps) => {
       if (conversationId) {
         await sendMessage(input);
       } else {
-        await startConversation( input);
+        await startConversation(input);
       }
       setInput("");
     } catch (error) {
@@ -52,7 +52,7 @@ const ChatInput = ({ conversationId }: ChatInputProps) => {
     <div className="border-t border-gray-800 bg-gray-950 p-4">
       <div className="max-w-4xl mx-auto">
         <div className="relative flex flex-col gap-2">
-       
+
 
           {/* Input area */}
           <div className="relative flex items-start">
@@ -68,11 +68,10 @@ const ChatInput = ({ conversationId }: ChatInputProps) => {
             />
             <button
               onClick={handleSubmit}
-              className={`absolute right-2 bottom-2.5 p-1.5 rounded-lg transition-colors ${
-                input.trim()
+              className={`absolute right-2 bottom-2.5 p-1.5 rounded-lg transition-colors ${input.trim()
                   ? "bg-purple-600 hover:bg-purple-500 text-white"
                   : "bg-gray-700 text-gray-400 cursor-not-allowed"
-              }`}
+                }`}
               disabled={isDisabled}
               aria-label="Enviar mensaje"
             >

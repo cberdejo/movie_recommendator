@@ -12,16 +12,16 @@ const ChatPage = ({ useCase = "movies" }: ChatPageProps) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
     // Check screen width and localStorage on initial render
     const savedState = localStorage.getItem('sidebarOpen');
-    
+
     // On mobile (less than 768px width), default to closed regardless of saved state
     if (typeof window !== 'undefined' && window.innerWidth < 768) {
       return false;
     }
-    
+
     // On desktop, use the saved state or default to true
     return savedState !== null ? savedState === 'true' : true;
   });
-  
+
   const { id: idParam } = useParams();
   const conversationId =
     idParam && !Number.isNaN(Number(idParam)) ? Number(idParam) : undefined;

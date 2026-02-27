@@ -55,16 +55,14 @@ const Sidebar = ({ useCase = "movies", isOpen, onClose }: SidebarProps) => {
       {/* Overlay for small screens - only visible when sidebar is open */}
       <div
         onClick={handleOutsideClick}
-        className={`md:hidden fixed inset-0 bg-black/50 z-40 transition-opacity duration-300 ${
-          isOpen ? "opacity-100" : "opacity-0 pointer-events-none"
-        }`}
+        className={`md:hidden fixed inset-0 bg-black/50 z-40 transition-opacity duration-300 ${isOpen ? "opacity-100" : "opacity-0 pointer-events-none"
+          }`}
       />
-      
+
       {/* Sidebar */}
       <div
-        className={`fixed md:relative h-full z-50 md:z-auto bg-gray-950 border-r border-gray-800 w-80 transform transition-transform duration-300 ${
-          isOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
-        }`}
+        className={`fixed md:relative h-full z-50 md:z-auto bg-gray-950 border-r border-gray-800 w-80 transform transition-transform duration-300 ${isOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+          }`}
       >
         <div className="h-full flex flex-col">
           {/* Sidebar Header with Branding */}
@@ -84,7 +82,7 @@ const Sidebar = ({ useCase = "movies", isOpen, onClose }: SidebarProps) => {
                 </span>
                 <h1 className="text-lg font-bold text-gray-200">LLM Chat</h1>
               </div>
-             
+
             </div>
             <button
               onClick={() => {

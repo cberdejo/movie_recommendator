@@ -22,7 +22,7 @@ interface ConversationStore {
     conversationId: number,
     firstMessage: MessageType
   ) => void;
-  updateConversationTitle: (conversationId: number, title: string) => void;
+  updateConversationTitle: (conversationId: number, title: string) => Promise<void>;
   updateMessageContent: (
     conversationId: number,
     messageId: number,
@@ -53,8 +53,8 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
     try {
       console.log("Initial data fetching", useCase);
       const url = useCase 
-        ? `${SERVER_ENDPOINTS.conversatios}?use_case=${useCase}`
-        : SERVER_ENDPOINTS.conversatios;
+        ? `${SERVER_ENDPOINTS.conversations}?use_case=${useCase}`
+        : SERVER_ENDPOINTS.conversations;
       const [conversations] = await Promise.all([
         apiFetch(url),
       ]);
@@ -97,7 +97,7 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
       }
 
       const conversationWithMessages: ConversationType = await apiFetch(
-        `${SERVER_ENDPOINTS.conversatios}/${id}`
+        `${SERVER_ENDPOINTS.conversations}/${id}`
       );
 
       set((state) => ({
@@ -195,17 +195,24 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
     });
   },
 
-  updateConversationTitle: (conversationId: number, title: string) => {
+  updateConversationTitle: async (conversationId: number, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    await apiFetch(
+      `${SERVER_ENDPOINTS.conversations}/${conversationId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ title: trimmed }),
+      }
+    );
     set((state) => {
       const updatedConversations = state.conversations.map((conv) =>
-        conv.ID === conversationId ? { ...conv, Title: title } : conv
+        conv.ID === conversationId ? { ...conv, Title: trimmed } : conv
       );
-
       const updateSelectedConversation =
         state.selectedConversation?.ID === conversationId
-          ? { ...state.selectedConversation, Title: title }
+          ? { ...state.selectedConversation, Title: trimmed }
           : state.selectedConversation;
-
       return {
         conversations: updatedConversations,
         selectedConversation: updateSelectedConversation,
@@ -325,8 +332,9 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
     set({ error: null });
 
     try {
-      await apiFetch(`${SERVER_ENDPOINTS.conversatios}/${id}`, {
+      await apiFetch(`${SERVER_ENDPOINTS.conversations}/${id}`, {
         method: "DELETE",
+        skipJsonParse: true,
       });
 
       set((state) => ({
