@@ -17,7 +17,7 @@ from app.crud.conversation_crud import (
 )
 from app.schemas.ws_schemas import WSRequest, WSResponse
 from app.core.config.logger import get_logger
-
+import json
 logger = get_logger("WS_MOVIES_HANDLER")
 
 
@@ -118,7 +118,6 @@ async def ws_handler_movies(websocket: WebSocket, db: AsyncSession):
         )
         return
 
-
 async def _generate_and_stream_langgraph(
     websocket: WebSocket,
     user_message: str,
@@ -130,107 +129,59 @@ async def _generate_and_stream_langgraph(
     start_ts = time.time()
 
     try:
-        logger.info(
-            "[%s] _generate_and_stream_langgraph: start (convo_id=%s)",
-            req_id,
-            convo_id,
-        )
+        logger.info("[%s] _generate_and_stream_langgraph: start (convo_id=%s)", req_id, convo_id)
 
-        # Tell frontend the assistant is "thinking" until first token
-        await _send_if_open(
-            websocket,
-            WSResponse(type="thinking_start", content=None).model_dump_json(),
-        )
+        await _send_if_open(websocket, '{"type": "thinking_start", "content": null}')
 
-        # 1. Retrieve the entire conversation history from the database.
-        # the last message in this list will already be the current `user_message`.
-        db_messages = await get_conversation_with_messages(
-            conversation_id=convo_id, db=db
-        )
+      
+        db_messages = await get_conversation_with_messages(conversation_id=convo_id, db=db) # this is used to get the conversation history in case of resume conversation
 
-        # 2. Format the messages so that LangChain understands them.
         langchain_messages = []
         for msg in db_messages.messages:
             if msg.role == "user":
                 langchain_messages.append(HumanMessage(content=msg.content))
-            elif msg.role in [
-                "assistant",
-                "model",
-            ]:
+            elif msg.role in ["assistant", "model"]:
                 langchain_messages.append(AIMessage(content=msg.content))
 
-        # If for some reason the query fails or comes empty (it shouldn't),
-        # we ensure that at least the current message is sent.
         if not langchain_messages:
             langchain_messages = [HumanMessage(content=user_message)]
 
         inputs = {"messages": langchain_messages}
-
         assistant_chunks: list[str] = []
-        final_response = ""
         thinking_end_sent = False
 
-        # 4. Stream events from LangGraph
+        # 2. Event iteration
         async for event in app_graph.astream_events(inputs, config={}, version="v1"):
             kind = event["event"]
 
             if kind == "on_chat_model_stream":
-                # Only stream tokens from generate and generate_general nodes
                 node_name = event.get("metadata", {}).get("langgraph_node", "")
-
+                
                 if node_name in ["generate", "generate_general"]:
                     content = event["data"]["chunk"].content
                     if content:
                         if not thinking_end_sent:
                             thinking_end_sent = True
-                            await _send_if_open(
-                                websocket,
-                                WSResponse(
-                                    type="thinking_end", content=None
-                                ).model_dump_json(),
-                            )
+                            await _send_if_open(websocket, '{"type": "thinking_end", "content": null}')
+                        
                         assistant_chunks.append(content)
-                        await _send_if_open(
-                            websocket,
-                            WSResponse(
-                                type="response_chunk", content=content
-                            ).model_dump_json(),
-                        )
+                        #json.dumps is much faster than Pydantic by token
+                        chunk_msg = json.dumps({"type": "response_chunk", "content": content})
+                        await _send_if_open(websocket, chunk_msg)
 
-            # Capture final generation from state updates
-            elif kind == "on_chain_end":
-                node_name = event.get("name", "")
-                if node_name in ["generate", "generate_general"]:
-                    output = event.get("data", {}).get("output", {})
-                    if isinstance(output, dict):
-                        # Check for generation in output
-                        if "generation" in output:
-                            final_response = output["generation"]
-                        # Also check messages for AIMessage content
-                        elif "messages" in output:
-                            messages = output["messages"]
-                            if messages and hasattr(messages[-1], "content"):
-                                final_response = messages[-1].content
-
-        # If we didn't get final response from events, join chunks
-        if not final_response:
-            final_response = "".join(assistant_chunks).strip()
+        # build the final response directly from the chunks.
+        # it is much more secure and faster than trying to pull it in 'on_chain_end'.
+        final_response = "".join(assistant_chunks).strip()
 
         if not thinking_end_sent:
-            await _send_if_open(
-                websocket,
-                WSResponse(type="thinking_end", content=None).model_dump_json(),
-            )
+            await _send_if_open(websocket, '{"type": "thinking_end", "content": null}')
 
         if not final_response:
             msg = "No tokens received from the model."
             logger.error("[%s] %s", req_id, msg)
-            await _send_if_open(
-                websocket,
-                WSResponse(type="error", content=msg).model_dump_json(),
-            )
+            await _send_if_open(websocket, json.dumps({"type": "error", "content": msg}))
         else:
-            # Save assistant message to database
+            # save in BD at the end 
             await add_message(
                 db=db,
                 conversation_id=convo_id,
@@ -238,18 +189,12 @@ async def _generate_and_stream_langgraph(
                 content=final_response,
             )
 
-        await _send_if_open(
-            websocket, WSResponse(type="done", content="").model_dump_json()
-        )
+        await _send_if_open(websocket, '{"type": "done", "content": ""}')
 
         elapsed = time.time() - start_ts
         logger.info("[%s] Generation completed in %.2fs", req_id, elapsed)
 
     except Exception as e:
         logger.exception("[%s] LangGraph generation error", req_id)
-        await _send_if_open(
-            websocket,
-            WSResponse(
-                type="error", content=f"Generation error: {e}"
-            ).model_dump_json(),
-        )
+        error_payload = json.dumps({"type": "error", "content": f"Generation error: {e}"})
+        await _send_if_open(websocket, error_payload)
