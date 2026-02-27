@@ -1,10 +1,10 @@
 model_list:
-  - model_name: primary-llm  
+  - model_name: primary-llm
     litellm_params:
-      model: ollama/llama3.1  
-      api_base: http://ollama:11434 
+      model: ollama/qwen2.5:7b-instruct
+      api_base: http://ollama:11434
 
   - model_name: secondary-llm
     litellm_params:
-      model: ollama/llama3.2:1b
+      model: ollama/qwen2.5:1.5b-instruct
       api_base: http://ollama:11434
