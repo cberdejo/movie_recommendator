@@ -69,14 +69,7 @@ const Sidebar = ({ useCase = "movies", isOpen, onClose }: SidebarProps) => {
           <div className="p-4 border-b border-gray-800">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center">
-                <button
-                  type="button"
-                  className="mr-2 p-1 rounded hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  onClick={() => navigate("/")}
-                  aria-label="Back to main page"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
+                
                 <span className="text-purple-500 text-xl mr-2">
                   🤖
                 </span>
