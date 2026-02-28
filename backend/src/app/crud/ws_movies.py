@@ -118,6 +118,9 @@ async def ws_handler_movies(websocket: WebSocket, db: AsyncSession):
         )
         return
 
+GRAPH_NODES = {"contextualize", "router", "retrieve", "generate", "generate_general"}
+
+
 async def _generate_and_stream_langgraph(
     websocket: WebSocket,
     user_message: str,
@@ -133,8 +136,7 @@ async def _generate_and_stream_langgraph(
 
         await _send_if_open(websocket, '{"type": "thinking_start", "content": null}')
 
-      
-        db_messages = await get_conversation_with_messages(conversation_id=convo_id, db=db) # this is used to get the conversation history in case of resume conversation
+        db_messages = await get_conversation_with_messages(conversation_id=convo_id, db=db)
 
         langchain_messages = []
         for msg in db_messages.messages:
@@ -149,28 +151,69 @@ async def _generate_and_stream_langgraph(
         inputs = {"messages": langchain_messages}
         assistant_chunks: list[str] = []
         thinking_end_sent = False
+        active_node: str | None = None
 
-        # 2. Event iteration
+        await _send_if_open(
+            websocket,
+            json.dumps({"type": "graph_start", "content": None}),
+        )
+
         async for event in app_graph.astream_events(inputs, config={}, version="v1"):
             kind = event["event"]
+            meta = event.get("metadata", {})
+            lg_node = meta.get("langgraph_node", "")
+
+            if lg_node in GRAPH_NODES and lg_node != active_node:
+                if active_node:
+                    await _send_if_open(
+                        websocket,
+                        json.dumps({"type": "node_end", "content": active_node}),
+                    )
+                active_node = lg_node
+                await _send_if_open(
+                    websocket,
+                    json.dumps({"type": "node_start", "content": active_node}),
+                )
+
+            if kind == "on_chain_end" and lg_node in GRAPH_NODES:
+                output = event.get("data", {}).get("output", {})
+                if isinstance(output, dict):
+                    node_data = {}
+                    if "reformulated_question" in output:
+                        node_data["reformulated_question"] = output["reformulated_question"]
+                    if "decision" in output:
+                        node_data["decision"] = output["decision"]
+                    if "documents" in output:
+                        node_data["documents_count"] = len(output["documents"])
+                    if node_data:
+                        await _send_if_open(
+                            websocket,
+                            json.dumps({
+                                "type": "node_output",
+                                "content": json.dumps({"node": lg_node, **node_data}),
+                            }),
+                        )
 
             if kind == "on_chat_model_stream":
-                node_name = event.get("metadata", {}).get("langgraph_node", "")
-                
+                node_name = meta.get("langgraph_node", "")
+
                 if node_name in ["generate", "generate_general"]:
                     content = event["data"]["chunk"].content
                     if content:
                         if not thinking_end_sent:
                             thinking_end_sent = True
                             await _send_if_open(websocket, '{"type": "thinking_end", "content": null}')
-                        
+
                         assistant_chunks.append(content)
-                        #json.dumps is much faster than Pydantic by token
                         chunk_msg = json.dumps({"type": "response_chunk", "content": content})
                         await _send_if_open(websocket, chunk_msg)
 
-        # build the final response directly from the chunks.
-        # it is much more secure and faster than trying to pull it in 'on_chain_end'.
+        if active_node:
+            await _send_if_open(
+                websocket,
+                json.dumps({"type": "node_end", "content": active_node}),
+            )
+
         final_response = "".join(assistant_chunks).strip()
 
         if not thinking_end_sent:
@@ -181,7 +224,6 @@ async def _generate_and_stream_langgraph(
             logger.error("[%s] %s", req_id, msg)
             await _send_if_open(websocket, json.dumps({"type": "error", "content": msg}))
         else:
-            # save in BD at the end 
             await add_message(
                 db=db,
                 conversation_id=convo_id,
@@ -189,6 +231,10 @@ async def _generate_and_stream_langgraph(
                 content=final_response,
             )
 
+        await _send_if_open(
+            websocket,
+            json.dumps({"type": "graph_end", "content": None}),
+        )
         await _send_if_open(websocket, '{"type": "done", "content": ""}')
 
         elapsed = time.time() - start_ts
@@ -196,5 +242,14 @@ async def _generate_and_stream_langgraph(
 
     except Exception as e:
         logger.exception("[%s] LangGraph generation error", req_id)
+        if active_node:
+            await _send_if_open(
+                websocket,
+                json.dumps({"type": "node_end", "content": active_node}),
+            )
+        await _send_if_open(
+            websocket,
+            json.dumps({"type": "graph_end", "content": None}),
+        )
         error_payload = json.dumps({"type": "error", "content": f"Generation error: {e}"})
         await _send_if_open(websocket, error_payload)

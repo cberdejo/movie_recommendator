@@ -13,7 +13,12 @@ export type WSResponseType =
   | "conversation_resumed"
   | "response_chunk"
   | "done"
-  | "error";
+  | "error"
+  | "graph_start"
+  | "graph_end"
+  | "node_start"
+  | "node_end"
+  | "node_output";
 
 export interface WSBasePayload {
   type: WSMessageType;
@@ -50,7 +55,12 @@ export type WSEventType =
   | "conversation_resumed"
   | "response_chunk"
   | "response_done"
-  | "error";
+  | "error"
+  | "graph_start"
+  | "graph_end"
+  | "node_start"
+  | "node_end"
+  | "node_output";
 
 type WSEventListener = (data: any) => void;
 
@@ -202,6 +212,26 @@ class WebSocketService {
 
         case "done":
           this.triggerEvent("response_done", null);
+          break;
+
+        case "graph_start":
+          this.triggerEvent("graph_start", null);
+          break;
+
+        case "graph_end":
+          this.triggerEvent("graph_end", null);
+          break;
+
+        case "node_start":
+          this.triggerEvent("node_start", response.content);
+          break;
+
+        case "node_end":
+          this.triggerEvent("node_end", response.content);
+          break;
+
+        case "node_output":
+          this.triggerEvent("node_output", response.content);
           break;
 
         case "error":

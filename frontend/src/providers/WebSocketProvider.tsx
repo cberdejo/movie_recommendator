@@ -18,11 +18,40 @@ const generateTempId = () => {
   return Date.now() * 1000 + tempIdCounter;
 };
 
+export type GraphNodeStatus = "idle" | "active" | "completed" | "error";
+
+export interface GraphNodeState {
+  id: string;
+  status: GraphNodeStatus;
+  output?: Record<string, any>;
+}
+
+export interface GraphState {
+  isRunning: boolean;
+  nodes: Record<string, GraphNodeState>;
+  activeNode: string | null;
+  executionPath: string[];
+}
+
+const INITIAL_GRAPH_STATE: GraphState = {
+  isRunning: false,
+  nodes: {
+    contextualize: { id: "contextualize", status: "idle" },
+    router: { id: "router", status: "idle" },
+    retrieve: { id: "retrieve", status: "idle" },
+    generate: { id: "generate", status: "idle" },
+    generate_general: { id: "generate_general", status: "idle" },
+  },
+  activeNode: null,
+  executionPath: [],
+};
+
 interface WebSocketContextType {
   isConnected: boolean;
   isThinking: boolean;
   currentThinking: string;
   finalThinking: string | null;
+  graphState: GraphState;
   sendMessage: (message: string) => Promise<void>;
   startConversation: (message: string) => Promise<void>;
   resumeConversation: (conversationId: number) => Promise<void>;
@@ -34,6 +63,7 @@ const WebSocketContext = createContext<WebSocketContextType>({
   isThinking: false,
   currentThinking: "",
   finalThinking: null,
+  graphState: INITIAL_GRAPH_STATE,
   sendMessage: async () => {},
   startConversation: async () => {},
   resumeConversation: async () => {},
@@ -58,6 +88,7 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
   const [finalThinking, setFinalThinking] = useState<string | null>(null);
   const [currentThinking, setCurrentThinking] = useState("");
   const [currentResponse, setCurrentResponse] = useState("");
+  const [graphState, setGraphState] = useState<GraphState>(INITIAL_GRAPH_STATE);
   const currentUserMessageRef = useRef<string>("");
   const activeMessageIdRef = useRef<number | null>(null);
   const responseContentRef = useRef<string>("");
@@ -72,38 +103,36 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
     updateMessageWithThinking,
   } = useConversationStore();
 
-  // Determine use case from location
   const getUseCaseFromPath = (): UseCase => {
     if (location.pathname.startsWith("/chat/movies")) return "movies";
     if (location.pathname.startsWith("/chat/reviews")) return "reviews";
     if (location.pathname.startsWith("/chat/lightrag")) return "lightrag";
-    return "movies"; // default
+    return "movies";
   };
 
+  const useCase = getUseCaseFromPath();
+  const isInChat = location.pathname.startsWith("/chat/");
+
   useEffect(() => {
-    const useCase = getUseCaseFromPath();
-    
-    // Only connect if we're in a use case route (not on landing page)
-    if (useCase && location.pathname.startsWith("/chat/")) {
-      const initializeUseCase = async () => {
-        await fetchInitialData(useCase);
-        const wsUrl = getWebSocketUrl(useCase);
-        const connected = await wsService.connect(wsUrl);
-        setIsConnected(connected);
-      };
-
-      initializeUseCase();
-
-      // Cleanup on unmount or route change
-      return () => {
-        wsService.disconnect();
-      };
-    } else {
-      // Disconnect if we're not in a use case route
+    if (!isInChat) {
       wsService.disconnect();
       setIsConnected(false);
+      return;
     }
-  }, [fetchInitialData, location.pathname]);
+
+    const initializeUseCase = async () => {
+      await fetchInitialData(useCase);
+      const wsUrl = getWebSocketUrl(useCase);
+      const connected = await wsService.connect(wsUrl);
+      setIsConnected(connected);
+    };
+
+    initializeUseCase();
+
+    return () => {
+      wsService.disconnect();
+    };
+  }, [fetchInitialData, useCase, isInChat]);
 
   useEffect(() => {
     const eventHandlers: Record<WSEventType, (data: any) => void> = {
@@ -275,6 +304,58 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
         setThinkingStartTime(null);
         setThinkingEndTime(null);
       },
+      graph_start: () => {
+        setGraphState({
+          ...INITIAL_GRAPH_STATE,
+          isRunning: true,
+        });
+      },
+      graph_end: () => {
+        setGraphState((prev) => ({ ...prev, isRunning: false, activeNode: null }));
+      },
+      node_start: (nodeName: string) => {
+        if (!nodeName) return;
+        setGraphState((prev) => ({
+          ...prev,
+          activeNode: nodeName,
+          executionPath: [...prev.executionPath, nodeName],
+          nodes: {
+            ...prev.nodes,
+            [nodeName]: { ...prev.nodes[nodeName], status: "active" },
+          },
+        }));
+      },
+      node_end: (nodeName: string) => {
+        if (!nodeName) return;
+        setGraphState((prev) => ({
+          ...prev,
+          activeNode: prev.activeNode === nodeName ? null : prev.activeNode,
+          nodes: {
+            ...prev.nodes,
+            [nodeName]: { ...prev.nodes[nodeName], status: "completed" },
+          },
+        }));
+      },
+      node_output: (rawContent: string) => {
+        try {
+          const data = JSON.parse(rawContent);
+          const nodeName = data.node;
+          if (!nodeName) return;
+          const { node: _, ...outputData } = data;
+          setGraphState((prev) => ({
+            ...prev,
+            nodes: {
+              ...prev.nodes,
+              [nodeName]: {
+                ...prev.nodes[nodeName],
+                output: { ...prev.nodes[nodeName]?.output, ...outputData },
+              },
+            },
+          }));
+        } catch {
+          /* ignore parse errors */
+        }
+      },
       error: (errorMsg) => {
         console.error(`Error: ${errorMsg}`);
         setIsThinking(false);
@@ -373,6 +454,7 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
     isThinking,
     currentThinking,
     finalThinking,
+    graphState,
     sendMessage,
     startConversation,
     resumeConversation,

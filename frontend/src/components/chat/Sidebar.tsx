@@ -61,7 +61,7 @@ const Sidebar = ({ useCase = "movies", isOpen, onClose }: SidebarProps) => {
 
       {/* Sidebar */}
       <div
-        className={`fixed md:relative h-full z-50 md:z-auto bg-gray-950 border-r border-gray-800 w-80 transform transition-transform duration-300 ${isOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        className={`fixed md:relative h-full z-50 md:z-auto bg-gray-950 border-r border-gray-800 w-80 md:w-full transform transition-transform duration-300 ${isOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
           }`}
       >
         <div className="h-full flex flex-col">

@@ -26,6 +26,7 @@ const ChatView = ({
   const resumedIdRef = useRef<number | null>(null);
   const isUserScrollingRef = useRef(false);
   const lastMessageIdRef = useRef<number | null>(null);
+  
   const {
     isThinking,
     currentThinking,
@@ -34,31 +35,26 @@ const ChatView = ({
     isConnected,
   } = useWebSocket();
 
-
-  const selectedConversation = useConversationStore(
-    (state) => state.selectedConversation
-  );
-
-  const setSelectedConversation = useConversationStore(
-    (state) => state.setSelectedConversation
-  );
-
-  const isMessagesLoading = useConversationStore(
-    (state) => state.isMessagesLoading
-  );
-  const isInitialLoading = useConversationStore(
-    (state) => state.isInitialLoading
-  );
-  const getConversation = useConversationStore(
-    (state) => state.getConversation
-  );
-  const updateConversationTitle = useConversationStore(
-    (state) => state.updateConversationTitle
-  );
+  const selectedConversation = useConversationStore((state) => state.selectedConversation);
+  const setSelectedConversation = useConversationStore((state) => state.setSelectedConversation);
+  const isMessagesLoading = useConversationStore((state) => state.isMessagesLoading);
+  const isInitialLoading = useConversationStore((state) => state.isInitialLoading);
+  const getConversation = useConversationStore((state) => state.getConversation);
+  const updateConversationTitle = useConversationStore((state) => state.updateConversationTitle);
 
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
+
+  // --- NUEVOS REFS PARA SOLUCIONAR LA CONDICIÓN DE CARRERA ---
+  const isThinkingRef = useRef(isThinking);
+  const prevIdRef = useRef<number | undefined>(undefined);
+
+  // Mantenemos el ref sincronizado con el estado real de isThinking
+  useEffect(() => {
+    isThinkingRef.current = isThinking;
+  }, [isThinking]);
+  // -----------------------------------------------------------
 
   useEffect(() => {
     if (isEditingTitle) {
@@ -79,7 +75,7 @@ const ChatView = ({
     }
   };
 
-  // Detect when user manually scrolls and prevent auto-scroll while they're interacting
+  // Detect when user manually scrolls
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
@@ -88,26 +84,17 @@ const ChatView = ({
 
     const handleScrollStart = () => {
       isUserScrollingRef.current = true;
-
-      // Clear any existing timeout
-      if (userScrollTimeout) {
-        clearTimeout(userScrollTimeout);
-      }
+      if (userScrollTimeout) clearTimeout(userScrollTimeout);
     };
 
     const handleScrollEnd = () => {
-      // Set a timeout before clearing the user scrolling flag
-      // This prevents auto-scroll from kicking in too soon
       userScrollTimeout = setTimeout(() => {
         isUserScrollingRef.current = false;
-      }, 1000); // Wait 1 second after scrolling stops
+      }, 1000);
     };
 
-    // Use both mousedown and touchstart to detect when user begins scrolling
     container.addEventListener('mousedown', handleScrollStart);
     container.addEventListener('touchstart', handleScrollStart);
-
-    // Use both mouseup and touchend to detect when user stops scrolling
     container.addEventListener('mouseup', handleScrollEnd);
     container.addEventListener('touchend', handleScrollEnd);
 
@@ -116,10 +103,7 @@ const ChatView = ({
       container.removeEventListener('touchstart', handleScrollStart);
       container.removeEventListener('mouseup', handleScrollEnd);
       container.removeEventListener('touchend', handleScrollEnd);
-
-      if (userScrollTimeout) {
-        clearTimeout(userScrollTimeout);
-      }
+      if (userScrollTimeout) clearTimeout(userScrollTimeout);
     };
   }, []);
 
@@ -128,24 +112,16 @@ const ChatView = ({
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    // Get the ID of the last message (if any)
     const messages = selectedConversation?.Messages || [];
     const lastMessage = messages[messages.length - 1];
     const lastMessageId = lastMessage?.ID || null;
 
-    // Determine if this is a new message or a different conversation
     const isNewMessage = lastMessageId !== lastMessageIdRef.current;
     const isNewConversation = id !== resumedIdRef.current;
 
-    // Update the ref for next comparison
     lastMessageIdRef.current = lastMessageId;
 
-    // Only auto-scroll if:
-    // 1. User is not actively scrolling OR
-    // 2. This is a completely new message OR
-    // 3. We switched conversations
     if (!isUserScrollingRef.current || isNewMessage || isNewConversation) {
-      // Use smooth scrolling for better user experience
       container.scrollTo({
         top: container.scrollHeight,
         behavior: 'smooth'
@@ -153,44 +129,54 @@ const ChatView = ({
     }
   }, [selectedConversation?.Messages, id, isThinking, currentThinking]);
 
+  // --- EFFECT 1 : LOAD CONVERSATION ---
   useEffect(() => {
     const loadConversation = async () => {
       if (!id) {
         setSelectedConversation(null);
+        prevIdRef.current = id;
+        return;
+      }
+
+      // if we are coming from the welcome screen (undefined) to the new ID just created
+      const isNewChatStarting = prevIdRef.current === undefined;
+
+      // GUARD: If we are "thinking" (the WS started the stream) and we just created the chat, 
+      // BLOCK the REST request to not overwrite the Zustand store.
+      if (isThinkingRef.current && isNewChatStarting) {
+        console.log("Ignoring DB fetch to not overwrite the active WS stream.");
+        prevIdRef.current = id;
         return;
       }
 
       await getConversation(id);
+      prevIdRef.current = id;
     };
 
     loadConversation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, getConversation, navigate, setSelectedConversation]);
 
+  // --- EFFECT 2 : CLEAR THINKING ---
   useEffect(() => {
-    // Reset any thinking UI when conversation changes
-    if (clearThinkingState) {
+    // Reset any thinking UI when conversation changes, 
+    // BUT only if we are not in full streaming of the new chat.
+    if (clearThinkingState && !isThinkingRef.current) {
       clearThinkingState();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, clearThinkingState]);
 
+  // Try Resume Conversation
   useEffect(() => {
     const tryResumeConversation = async () => {
-      // Only try to resume if:
-      // 1. We have an ID
-      // 2. We're connected
-      // 3. We haven't already resumed this exact ID
-      // 4. We have a selected conversation loaded
       if (
         id &&
         isConnected &&
         resumedIdRef.current !== id &&
         selectedConversation
       ) {
-        console.log(`Attempting to resume conversation: ${id}`);
-
-        // Update the ref before the async call to prevent duplicates
         resumedIdRef.current = id;
-
         try {
           await resumeConversation(id);
         } catch (error) {
@@ -206,13 +192,13 @@ const ChatView = ({
   return (
     <div className="h-full flex flex-col">
       {/* Header with centered title for better mobile experience */}
-      <div className="p-4 md:pl-14 border-b border-gray-800 flex items-center justify-center relative">
+      <div className="p-4 md:pl-10 border-b border-gray-800 flex items-center justify-center relative">
         {/* Mobile sidebar toggle */}
         <button
           type="button"
           className="absolute left-4 md:hidden p-2 rounded hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
           onClick={onToggleSidebar}
-          aria-label="Abrir o cerrar la barra lateral de conversaciones"
+          aria-label="Open or close the conversation sidebar"
         >
           <Menu className="w-5 h-5 text-gray-200" />
         </button>
@@ -241,14 +227,14 @@ const ChatView = ({
                 }
               }}
               className="w-full max-w-md px-2 py-1 text-xl font-semibold text-gray-200 bg-gray-800 border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
-              aria-label="Nombre de la conversación"
+              aria-label="Conversation name"
             />
           ) : (
             <button
               type="button"
               onClick={() => id && selectedConversation && setIsEditingTitle(true)}
               className="group flex items-center justify-center gap-2 text-xl font-semibold text-gray-200 text-center hover:text-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500 rounded px-2"
-              aria-label="Cambiar nombre de la conversación"
+              aria-label="Change conversation name"
             >
               {id
                 ? selectedConversation?.Title || "Chat"
@@ -267,9 +253,8 @@ const ChatView = ({
         {/* Connection status indicator */}
         <div className="absolute right-4 flex items-center gap-2">
           <span
-            className={`h-2 w-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"
-              }`}
-            aria-label={isConnected ? "Conectado al servidor" : "Desconectado del servidor"}
+            className={`h-2 w-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"}`}
+            aria-label={isConnected ? "Connected to server" : "Disconnected from server"}
           />
           <span className="hidden sm:inline text-xs text-gray-500">
             {isConnected ? "Connected" : "Disconnected"}
@@ -277,31 +262,15 @@ const ChatView = ({
         </div>
       </div>
 
-      {/* Model Selector */}
-      {/* {!id && (
-        <div className="px-4 pt-4 pb-2 w-full flex justify-center border-b border-gray-800">
-          <div className="w-full max-w-sm">
-            <ModelSelector
-              selectedModel={selectedModel || defaultModel}
-              onModelSelect={(model) => {
-                setSelectedModel(model);
-              }}
-            />
-          </div>
-        </div>
-      )} */}
-
       {/* Messages or Welcome Screen */}
       <div
         className="flex-1 overflow-y-auto"
         ref={messagesContainerRef}
         onScroll={() => {
-          // Mark that user is scrolling when they actively scroll
           isUserScrollingRef.current = true;
         }}
       >
         {id ? (
-          // Show messages if we have a conversation ID (skeleton only on initial WS/data load)
           isInitialLoading ? (
             <>
               <MessageSkeleton />
@@ -374,7 +343,6 @@ const ChatView = ({
             </>
           )
         ) : (
-          // Welcome screen when no conversation is selected
           <div className="h-full flex flex-col items-center justify-center px-4 text-center">
             <div className="mb-8 text-5xl">
               {useCase === "movies" ? "🎬" : useCase === "reviews" ? "💬" : "✨"}
@@ -405,7 +373,6 @@ const ChatView = ({
                 <li className="flex items-center mb-1">
                   <span className={`mr-2 ${useCase === "movies" ? "text-purple-500" : useCase === "reviews" ? "text-blue-500" : "text-green-500"}`}>•</span> Chat history and conversation management
                 </li>
-
               </ul>
             </div>
           </div>
