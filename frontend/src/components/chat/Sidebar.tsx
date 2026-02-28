@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import ConversationItem from "./ConversationItem";
-import { ChevronLeft, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 
 import { useConversationStore } from "../../store/conversationstore";
 import { ConversationSkeleton } from "../loaders/skeleton";

@@ -1,4 +1,17 @@
 services:
+  frontend:
+    build:
+      context: ./
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000/api/v1}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000/api/v1/ws/movies}
+    container_name: frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
   qdrant:
     image: qdrant/qdrant
     ports:
@@ -13,14 +26,19 @@ services:
       context: ./
       dockerfile: backend/Dockerfile
     container_name: backend
+    ports:
+      - "8000:8000"
     environment:
       QDRANT_HOST: ${QDRANT_HOST:-qdrant}
       QDRANT_PORT: ${QDRANT_PORT:-6333}
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-movie_reviews}
+      DATABASE_URI: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-chatdb}
     depends_on:
-      - qdrant
-      - postgres
+      qdrant:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     working_dir: /app
     command: ["python",  "-m", "app.main"]
     env_file:
@@ -65,16 +83,6 @@ services:
       retries: 20
       start_period: 10s
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama 
-    restart: unless-stopped
-
-
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: litellm
@@ -83,10 +91,7 @@ services:
     volumes:
       - ./backend/litellm_config.yaml:/app/config.yaml 
     command: [ "--config", "/app/config.yaml", "--detailed_debug" ]
-    depends_on:
-      - ollama
     restart: unless-stopped
-
 
 
 volumes:

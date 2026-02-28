@@ -337,7 +337,6 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
     try {
       await apiFetch(`${SERVER_ENDPOINTS.conversations}/${id}`, {
         method: "DELETE",
-        skipJsonParse: true,
       });
 
       set((state) => ({

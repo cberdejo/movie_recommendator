@@ -1,3 +1,4 @@
+# LiteLLM configuration file 
 model_list:
   - model_name: primary-llm
     litellm_params:
