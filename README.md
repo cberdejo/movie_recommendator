@@ -143,21 +143,11 @@ Users can **stop an in-progress assistant reply** at any time:
 3. **After interrupt**: The server sends `interrupt_ack` to the client. If the model had already produced some text, that partial reply is kept and the handler appends a short suffix (e.g. `[message interrupted by the user]`) before saving the message to Postgres. So the conversation history still contains the truncated turn plus the interrupt marker.
 
 
-### Change Conversation Name <a id="change-conversation-name"></a>
+### Conversations <a id="change-conversation-name"></a>
 
-Conversation titles are editable:
-
-- **Backend**: REST endpoint (e.g. `PATCH /api/v1/conversations/{id}`) accepts a body like `{ "title": "New title" }` and calls `update_conversation_title` to persist the new title in PostgreSQL.
-- **Frontend**: In the chat view, the conversation title is shown in the header. The user can click the title to switch into edit mode (e.g. inline input), then save by blur or Enter. The store calls the PATCH API and updates the local conversation list and selected conversation so the new name appears everywhere immediately.
-
-
-### Conversation History in PostgreSQL <a id="conversation-history-in-postgresql"></a>
-
-Chat history is stored in **PostgreSQL** (not only in memory):
-
-- **Models**: Two main entities—**Conversation** (id, title, model, use_case, created_at, updated_at) and **Message** (conversation_id, role, content, raw_content, optional thinking fields, etc.). A conversation has many messages.
-- **Persistence**: Every user and assistant message is written via `add_message` after the WebSocket handler gets the user input or finishes streaming the assistant reply. Conversation creation and title updates use the conversation CRUD layer.
-- **Use in the assistant**: Before each LangGraph run, the backend loads the last N messages for the current conversation with `get_conversation_with_messages_limited(conversation_id, db, number_of_messages=...)`. Those messages are converted to LangChain `HumanMessage` / `AIMessage` and passed as the `messages` state so the graph can contextualize the question and generate with full chat context (see [LangGraph Flow](#langgraph-flow)).
+- Create new conversations; resume existing ones from the sidebar.
+- Edit conversation name (title) from the chat header.
+- Messages are saved in **PostgreSQL** and used as context by the assistant for the next replies.
 
 
 ### LangGraph Flow <a id="langgraph-flow"></a>
