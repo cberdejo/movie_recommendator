@@ -104,7 +104,7 @@ def format_history(messages: list[AnyMessage]) -> str:
         formatted.append(f"{role}: {content}")
 
     # Join last 6 messages for context
-    return "\n".join(formatted[-6:])
+    return "\n".join(formatted[-llmsettings.number_of_messages_to_contextualize:])
 
 
 async def contextualize_question(state: AgentState):

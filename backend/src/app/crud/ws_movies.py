@@ -3,6 +3,7 @@ WebSocket handler for movie recommendations.
 """
 
 import time
+import json
 
 from fastapi import WebSocket, WebSocketDisconnect
 from langchain_core.messages import AIMessage, HumanMessage
@@ -13,12 +14,13 @@ from app.assistants.movie_assistant import build_app
 from app.crud.conversation_crud import (
     create_conversation,
     add_message,
-    get_conversation_with_messages,
+    get_conversation_with_messages_limited,
 )
 from app.schemas.ws_schemas import WSRequest, WSResponse
 from app.core.config.logger import get_logger
-import json
+from app.core.config.settings import llmsettings
 logger = get_logger("WS_MOVIES_HANDLER")
+
 
 
 async def _send_if_open(websocket: WebSocket, text: str) -> None:
@@ -136,7 +138,7 @@ async def _generate_and_stream_langgraph(
 
         await _send_if_open(websocket, '{"type": "thinking_start", "content": null}')
 
-        db_messages = await get_conversation_with_messages(conversation_id=convo_id, db=db)
+        db_messages = await get_conversation_with_messages_limited(conversation_id=convo_id, db=db, number_of_messages=llmsettings.number_of_messages_to_contextualize)
 
         langchain_messages = []
         for msg in db_messages.messages:

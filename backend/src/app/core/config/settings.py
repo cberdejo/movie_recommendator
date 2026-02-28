@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings
 class LiteLLMSettings(BaseSettings):
     # Base URL of LiteLLM (e.g. http://localhost:4000). We expose openai_base_url with /v1 for ChatOpenAI.
     url: str = os.getenv("LITELLM_URL", "http://localhost:4000")
+    number_of_messages_to_contextualize: int = os.getenv("NUMBER_OF_MESSAGES_TO_CONTEXTUALIZE", 6)
 
     class Config:
         env_file = ".env"

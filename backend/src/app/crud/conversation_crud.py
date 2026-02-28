@@ -8,6 +8,21 @@ from app.schemas.conversation_schema import RoleEnum
 async def create_conversation(
     title: str, model: str, use_case: str, db: AsyncSession
 ) -> Conversation:
+    """
+    Create a new conversation.
+
+    Args:
+        title: The title of the conversation.
+        model: The model to use for the conversation.
+        use_case: The use case for the conversation.
+        db: The database session.
+
+    Returns:
+        The created conversation.
+    Raises:
+        SQLAlchemyError: If there is an error creating the conversation.
+    """
+
     convo = Conversation(title=title, model=model, use_case=use_case)
     db.add(convo)
     await db.commit()
@@ -24,6 +39,23 @@ async def add_message(
     thinking: str | None = None,
     thinking_time: float | None = None,
 ) -> Message:
+    """
+    Add a message to a conversation.
+    
+    Args:
+        db: The database session.
+        conversation_id: The ID of the conversation.
+        role: The role of the message.
+        content: The content of the message.
+        raw_content: The raw content of the message.
+        thinking: The thinking of the message.
+        thinking_time: The thinking time of the message.
+
+    Returns:
+        The added message.
+    Raises:
+        SQLAlchemyError: If there is an error adding the message.
+    """
     raw = raw_content or content
 
     msg = Message(
@@ -45,26 +77,80 @@ async def add_message(
 async def get_conversation(
     conversation_id: int, db: AsyncSession
 ) -> Conversation | None:
+    """
+    Get a conversation with messages.
+    
+    Args:
+        conversation_id: The ID of the conversation.
+        db: The database session.
+        number_of_messages: The number of messages to get.
+
+    Returns:
+        The conversation with messages.
+    Raises:
+        SQLAlchemyError: If there is an error getting the conversation with messages.
+    """
     stmt = select(Conversation).where(Conversation.id == conversation_id)
     result = await db.exec(stmt)
     return result.one_or_none()
 
-
 async def get_conversation_with_messages(
-    conversation_id: int, db: AsyncSession
+    conversation_id: int, db: AsyncSession, number_of_messages: int = 10
 ) -> Conversation | None:
-    stmt = (
-        select(Conversation)
-        .where(Conversation.id == conversation_id)
-        .options(selectinload(Conversation.messages))
-    )
+    """
+    Get a conversation with messages.
+    
+    Args:
+        conversation_id: The ID of the conversation.
+        db: The database session.
+        number_of_messages: The number of messages to get.
+
+    Returns:
+        The conversation with messages.
+    Raises:
+        SQLAlchemyError: If there is an error getting the conversation with messages.
+    """
+    
+    stmt = select(Conversation).where(Conversation.id == conversation_id).options(selectinload(Conversation.messages))
     result = await db.exec(stmt)
     return result.one_or_none()
 
+    
+async def get_conversation_with_messages_limited(
+    conversation_id: int, db: AsyncSession, number_of_messages: int = 10
+) -> Conversation | None:
+    """
+    Get a conversation with messages.
+    
+    Args:
+        conversation_id: The ID of the conversation.
+        db: The database session.
+        number_of_messages: The number of messages to get.
+
+    Returns:
+        The conversation with messages.
+    Raises:
+        SQLAlchemyError: If there is an error getting the conversation with messages.
+    """
+    stmt = select(Conversation).where(Conversation.id == conversation_id).options(selectinload(Conversation.messages)).limit(number_of_messages)
+    result = await db.exec(stmt)
+    return result.one_or_none()
 
 async def list_conversations(
     db: AsyncSession, use_case: str | None = None
 ) -> list[Conversation]:
+    """
+    List conversations.
+    
+    Args:
+        db: The database session.
+        use_case: The use case for the conversations.
+
+    Returns:
+        The list of conversations.
+    Raises:
+        SQLAlchemyError: If there is an error listing the conversations.
+    """
     stmt = select(Conversation)
     if use_case:
         stmt = stmt.where(Conversation.use_case == use_case)
