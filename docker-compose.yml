@@ -96,5 +96,4 @@ services:
 
 volumes:
   qdrant_data:
-  ollama_data:
   postgres_data:
