@@ -17,9 +17,7 @@
 - [Project Overview](#project-overview)
 - [Project Structure](#project-structure)
 - [Main Technologies Used](#main-technologies-used)
-- [WebSocket](#websocket)
-- [LiteLLM](#litellm)
-- [Use cases](#use-cases)
+- [Features](#features)
 - [How to run](#run)
 - [Credits](#credits)
 - [License](#license)
@@ -81,27 +79,137 @@ movie_recommendator/
 ### Infrastructure & Deployment
 - **Docker**: Containerization platform used for packaging and deploying the application and its dependencies in a consistent, isolated environment.
 
-### LLM & Protocol
-- **MCP (Model Context Protocol)**: A protocol that enables standardized communication and context management between different components of AI systems, facilitating better integration and interoperability.
-
-
-## WebSocket <a id="websocket"></a>
-
-Real-time communication between the frontend and backend is done via **WebSockets**:
-
-- **Backend**: FastAPI exposes a WebSocket endpoint (e.g. `/api/v1/ws/movies`) that accepts text messages with the user's content. The assistant processes the query (RAG + LangGraph), calls the LLM through LiteLLM and sends the response **in streaming** over the same WebSocket, chunk by chunk, so the user sees the text appear live.
-- **Frontend**: A `WebSocketProvider` (React) maintains the connection and a service (`ws.ts`) handles opening the socket, sending messages and parsing incoming responses (e.g. typed messages such as content chunks or "done"). This allows the chat to display streaming without reloading the page.
-
-Benefits in this project: low perceived latency, a single persistent connection and native support for progressively generated text streams.
-
-
-## LiteLLM <a id="litellm"></a>
+### LiteLLM
 
 **[LiteLLM](https://github.com/BerriAI/litellm)** is a proxy that unifies access to multiple LLM providers behind an OpenAI-compatible API. In this project:
 
 - The backend does not call Ollama (or OpenAI, vLLM, etc.) directly, but **LiteLLM** (by default on port 4000).
 - LiteLLM translates requests to the configured provider's format and returns responses in a standard format, allowing you to **switch model or provider** without touching the backend code.
 - Model configuration (names, routes, API base) is defined in **`backend/litellm_config.yaml`**. There you list the models (e.g. `primary-llm` → `ollama/llama3.1`, `secondary-llm` → `ollama/llama3.2:1b`) and the `api_base` (e.g. `http://ollama:11434`). To use another backend (vLLM, OpenAI, etc.) just edit that file: add or change entries in `model_list` and adjust `litellm_params` (`model`, `api_base`, api_key if applicable). The docker-compose includes Ollama for convenience, but LiteLLM allows replacing or complementing it with any compatible API.
+
+
+## Features <a id="features"></a>
+
+### WebSocket (WS) <a id="websocket-ws-features"></a>
+
+Real-time communication between the frontend and backend is done via **WebSockets**:
+
+- **Backend**: FastAPI exposes a WebSocket endpoint (e.g. `/api/v1/ws/movies`) that accepts JSON messages. The assistant processes each query (RAG + LangGraph), calls the LLM through LiteLLM and streams the response over the same WebSocket.
+- **Frontend**: A `WebSocketProvider` (React) keeps the connection alive; the service (`ws.ts`) opens the socket, sends typed payloads and parses incoming events.
+
+**Client → Server message types:**
+
+| Type | Description |
+|------|-------------|
+| `start_conversation` | Start a new conversation; body includes `message` (first user message). The server creates a conversation in Postgres and starts generation. |
+| `resume_conversation` | Switch to an existing conversation by `convo_id`; no new message is sent. |
+| `message` | Send a user message in the current conversation; triggers RAG + LangGraph generation. |
+| `interrupt` | Ask the server to stop the current generation immediately (see [Chat Interruption](#chat-interruption)). |
+
+**Server → Client event types:**
+
+| Type | Description |
+|------|-------------|
+| `thinking_start` / `thinking_end` | Delimit the “thinking” phase before response chunks. |
+| `conversation_started` / `conversation_resumed` | Confirm new or resumed conversation; payload is the conversation ID. |
+| `response_chunk` | A piece of the assistant’s reply (streaming). |
+| `done` | Generation finished. |
+| `graph_start` / `graph_end` | Delimit one LangGraph run. |
+| `node_start` / `node_end` / `node_output` | LangGraph node lifecycle and optional outputs (reformulated question, decision, document count); used by the [LangGraph panel](#langgraph-flow) in the UI. |
+| `interrupt_ack` | Server confirms that the interrupt was applied. |
+| `error` | Error message (e.g. no active conversation, generation failure). |
+
+Benefits: low perceived latency, a single persistent connection, and native support for streaming text and live graph updates.
+
+
+### HybridSearcher <a id="hybridsearcher"></a>
+
+The **HybridSearcher** (`backend/src/app/services/retriever.py`) performs hybrid (dense + sparse) search over the movie/TV corpus stored in Qdrant:
+
+- **Dense vectors**: One embedding model (e.g. sentence-transformers) indexes semantic meaning; search uses cosine similarity.
+- **Sparse vectors**: A sparse model (e.g. BM25-style) indexes lexical/keyword matches.
+- **Fusion**: Qdrant’s **RRF (Reciprocal Rank Fusion)** combines dense and sparse results into a single ranking.
+- **Optional re-ranking**: A cross-encoder reranker can refine the top candidates (e.g. top 15 → rerank → top 5) for better relevance.
+
+The same class is used both to **index** documents (during `populate_movies_qdrant`) and to **search** at query time inside the LangGraph “retrieve” node. Configuration (model names, collection name, Qdrant URL) comes from `qdrantsettings`.
+
+
+### Chat Interruption <a id="chat-interruption"></a>
+
+Users can **stop an in-progress assistant reply** at any time:
+
+1. **Frontend**: The chat UI exposes an interrupt control (e.g. stop button). When clicked, the client sends a WebSocket message with `type: "interrupt"`.
+2. **Backend**: The WebSocket handler (`ws_movies.py`) maintains an `interrupt_event` (e.g. `asyncio.Event`). On `interrupt`, it sets this event and waits for the current generation task to finish. The LangGraph stream loop checks the event each iteration and exits as soon as it is set.
+3. **After interrupt**: The server sends `interrupt_ack` to the client. If the model had already produced some text, that partial reply is kept and the handler appends a short suffix (e.g. `[message interrupted by the user]`) before saving the message to Postgres. So the conversation history still contains the truncated turn plus the interrupt marker.
+
+
+### Change Conversation Name <a id="change-conversation-name"></a>
+
+Conversation titles are editable:
+
+- **Backend**: REST endpoint (e.g. `PATCH /api/v1/conversations/{id}`) accepts a body like `{ "title": "New title" }` and calls `update_conversation_title` to persist the new title in PostgreSQL.
+- **Frontend**: In the chat view, the conversation title is shown in the header. The user can click the title to switch into edit mode (e.g. inline input), then save by blur or Enter. The store calls the PATCH API and updates the local conversation list and selected conversation so the new name appears everywhere immediately.
+
+
+### Conversation History in PostgreSQL <a id="conversation-history-in-postgresql"></a>
+
+Chat history is stored in **PostgreSQL** (not only in memory):
+
+- **Models**: Two main entities—**Conversation** (id, title, model, use_case, created_at, updated_at) and **Message** (conversation_id, role, content, raw_content, optional thinking fields, etc.). A conversation has many messages.
+- **Persistence**: Every user and assistant message is written via `add_message` after the WebSocket handler gets the user input or finishes streaming the assistant reply. Conversation creation and title updates use the conversation CRUD layer.
+- **Use in the assistant**: Before each LangGraph run, the backend loads the last N messages for the current conversation with `get_conversation_with_messages_limited(conversation_id, db, number_of_messages=...)`. Those messages are converted to LangChain `HumanMessage` / `AIMessage` and passed as the `messages` state so the graph can contextualize the question and generate with full chat context (see [LangGraph Flow](#langgraph-flow)).
+
+
+### LangGraph Flow <a id="langgraph-flow"></a>
+
+The assistant is implemented as a **LangGraph** state machine in `backend/src/app/assistants/movie_assistant.py`. The graph decides whether to run retrieval (RAG) or answer in general chat.
+
+**Graph structure (Mermaid):**
+
+```mermaid
+flowchart TD
+    START([Start]) --> contextualize[contextualize]
+    contextualize --> router{router}
+    router -->|RETRIEVE| retrieve[retrieve]
+    router -->|GENERAL| generate_general[generate_general]
+    retrieve --> generate[generate]
+    generate --> END1([End])
+    generate_general --> END2([End])
+```
+
+**Node roles:**
+
+| Node | Role |
+|------|------|
+| **contextualize** | Rewrites the last user message using recent chat history so it is self-contained (e.g. “make it shorter” → “make the list of recommendations shorter”). Uses a secondary/smaller LLM. |
+| **router** | Classifies the reformulated question: **RETRIEVE** (needs movies/reviews from the vector DB) or **GENERAL** (general chat, no retrieval). |
+| **retrieve** | Calls **HybridSearcher** with the reformulated question and optional rerank; returns top documents. |
+| **generate** | Builds the final answer from the retrieved context and chat history (RAG path). |
+| **generate_general** | Answers without retrieval, using only chat history (general path). |
+
+**Frontend visualization of the graph**
+
+The **LangGraph panel** (e.g. `LangGraphPanel.tsx`) shows the same flow in the UI:
+
+- **Node cards**: One card per node (Contextualize, Router, Retrieve, Generate, General Answer). Each card shows an icon, label, short description, and optional **outputs** (e.g. reformulated question, decision, document count) when the backend sends `node_output` events.
+- **Status**: Each node has a status—**idle** (gray), **active** (purple, current step), **completed** (green), or **error** (red). The backend drives this via `node_start` / `node_end` and the execution path.
+- **Execution path**: A vertical layout mirrors the Mermaid flow: Start → contextualize → router → then either the retrieve → generate branch or the generate_general branch. Edges (lines/splits) are highlighted (e.g. purple when active, green when completed) so the user sees which branch is taken and which node is running.
+- **Live updates**: During streaming, `graph_start` / `graph_end` and `node_start` / `node_end` / `node_output` WebSocket events update the panel so the graph animates in real time and shows the router’s decision and retrieval count without leaving the chat.
+
+
+### Datasets (Kaggle) <a id="datasets-kaggle"></a>
+
+The Qdrant index is populated from two **Kaggle** datasets (used by default when no CSV paths are passed to the populate script):
+
+1. **IMDb-style dataset (movies)**  
+   - **Kaggle**: [payamamanat/imbd-dataset](https://www.kaggle.com/datasets/payamamanat/imbd-dataset)  
+   - Used for movies-only records (e.g. title, stars, genre, description, duration).
+
+2. **Netflix shows (movies + TV)**  
+   - **Kaggle**: [shivamb/netflix-shows](https://www.kaggle.com/datasets/shivamb/netflix-shows)  
+   - Used for mixed movies/TV (e.g. title, director, cast, listed_in, description, type).
+
+Download is done via **kagglehub** inside `backend/src/app/db/populate_movies_qdrant.py` when you run the init/profile without providing `-m` / `-x` paths. You need Kaggle API credentials configured for automatic download; otherwise you can download the datasets from the links above and pass the CSV paths to the script.
 
 
 ## How to run <a id="run"></a>
