@@ -9,8 +9,10 @@ class CreateConversationRequest(BaseModel):
 
 
 class CreateConversationResponse(BaseModel):
-    ID: int = None
-    Title: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int = Field(serialization_alias="ID")
+    title: str = Field(serialization_alias="Title")
     model: str
 
 
@@ -23,6 +25,8 @@ class ErrorResponse(BaseModel):
 
 
 class MessageRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
     id: int = Field(serialization_alias="ID")
     conversation_id: int = Field(serialization_alias="ConversationID")
     role: str = Field(serialization_alias="Role")
@@ -43,7 +47,7 @@ class ConversationRead(BaseModel):
     id: int = Field(serialization_alias="ID")
     title: str = Field(serialization_alias="Title")
     use_case: str = Field(serialization_alias="UseCase")
-    created_at: datetime = Field(serialization_alias="CreateAt")
+    created_at: datetime = Field(serialization_alias="CreatedAt")
     updated_at: datetime = Field(serialization_alias="UpdatedAt")
 
     # Serializes dates as ISO 8601 strings; adjust here if you need a different format
