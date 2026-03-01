@@ -5,7 +5,7 @@ from sqlalchemy import Column, DateTime, func
 from sqlmodel import Field, Relationship, SQLModel
 
 if TYPE_CHECKING:
-    from app.models.message_model import Message
+    from app.entities.message_model import Message
 
 
 class Conversation(SQLModel, table=True):
