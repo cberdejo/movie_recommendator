@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.config.logger import get_logger
 from app.db.session import get_session
 from app.schemas.conversation_schema import (
     RoleEnum,
@@ -23,6 +24,7 @@ from app.crud.conversation_crud import (
 )
 
 router = APIRouter()
+logger = get_logger("CONVERSATIONS_API")
 
 
 @router.post("/", response_model=CreateConversationResponse, status_code=201)
@@ -85,7 +87,7 @@ async def list_conversations_endpoint(
         ]
 
     except SQLAlchemyError as e:
-        print(f"Error creating conversation: {e}")
+        logger.exception("Error listing conversations")
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
