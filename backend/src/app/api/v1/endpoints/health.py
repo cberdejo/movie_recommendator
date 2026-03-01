@@ -23,9 +23,10 @@ async def health_check():
 
     # Check LLM backend (OpenAI, OpenCode, or custom OpenAI-compatible API)
     try:
-        config = llmsettings.get_primary_llm_config()
-        # Construct health endpoint from base_url
-        health_url = config["base_url"].rstrip("/v1") + "/models"
+        base_url = llmsettings.openai_base_url.rstrip("/")
+        health_url = (
+            f"{base_url[:-3]}/models" if base_url.endswith("/v1") else f"{base_url}/models"
+        )
 
         async with httpx.AsyncClient() as client:
             response = await client.get(health_url, timeout=5.0)
