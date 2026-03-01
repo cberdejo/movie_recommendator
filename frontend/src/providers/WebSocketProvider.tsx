@@ -49,24 +49,28 @@ const INITIAL_GRAPH_STATE: GraphState = {
 interface WebSocketContextType {
   isConnected: boolean;
   isThinking: boolean;
+  isGenerating: boolean;
   currentThinking: string;
   finalThinking: string | null;
   graphState: GraphState;
   sendMessage: (message: string) => Promise<void>;
   startConversation: (message: string) => Promise<void>;
   resumeConversation: (conversationId: number) => Promise<void>;
+  interruptGeneration: () => void;
   clearThinkingState: () => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextType>({
   isConnected: false,
   isThinking: false,
+  isGenerating: false,
   currentThinking: "",
   finalThinking: null,
   graphState: INITIAL_GRAPH_STATE,
   sendMessage: async () => {},
   startConversation: async () => {},
   resumeConversation: async () => {},
+  interruptGeneration: () => {},
   clearThinkingState: () => {},
 });
 
@@ -88,6 +92,8 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
   const [finalThinking, setFinalThinking] = useState<string | null>(null);
   const [currentThinking, setCurrentThinking] = useState("");
   const [currentResponse, setCurrentResponse] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const isGeneratingRef = useRef(false);
   const [graphState, setGraphState] = useState<GraphState>(INITIAL_GRAPH_STATE);
   const currentUserMessageRef = useRef<string>("");
   const activeMessageIdRef = useRef<number | null>(null);
@@ -141,9 +147,13 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
       },
       disconnected: () => {
         setIsConnected(false);
+        setIsGenerating(false);
+        isGeneratingRef.current = false;
       },
       thinking_start: () => {
         setIsThinking(true);
+        setIsGenerating(true);
+        isGeneratingRef.current = true;
         setCurrentThinking("");
         setThinkingStartTime(Date.now());
         setFinalThinking(null);
@@ -266,9 +276,7 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
 
           console.log(`Thinking time: ${thinkingTimeInSeconds}s`);
 
-          // If we already created a streaming message, just update it with final content
           if (activeMessageIdRef.current) {
-            // Update the message with final content and thinking
             updateMessageWithThinking(
               selectedConversation.ID,
               activeMessageIdRef.current,
@@ -277,10 +285,8 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
               thinkingTimeInSeconds
             );
 
-            // Reset active message ID
             activeMessageIdRef.current = null;
           } else {
-            // Create new message if we didn't stream (fallback)
             const assistantMessage: MessageType = {
               ID: generateTempId(),
               ConversationID: selectedConversation.ID,
@@ -297,12 +303,14 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
 
         }
 
-        // Reset state
         setCurrentResponse("");
         responseContentRef.current = "";
         activeMessageIdRef.current = null;
+        setIsThinking(false);
         setThinkingStartTime(null);
         setThinkingEndTime(null);
+        setIsGenerating(false);
+        isGeneratingRef.current = false;
       },
       graph_start: () => {
         setGraphState({
@@ -359,6 +367,8 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
       error: (errorMsg) => {
         console.error(`Error: ${errorMsg}`);
         setIsThinking(false);
+        setIsGenerating(false);
+        isGeneratingRef.current = false;
         responseContentRef.current = "";
       },
     };
@@ -402,6 +412,8 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
 
       addMessageToConversation(selectedConversation.ID, userMessage);
       setIsThinking(true);
+      setIsGenerating(true);
+      isGeneratingRef.current = true;
       responseContentRef.current = "";
 
       const success = await wsService.sendMessage(
@@ -412,6 +424,8 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
       if (!success) {
         console.error("Failed to send message");
         setIsThinking(false);
+        setIsGenerating(false);
+        isGeneratingRef.current = false;
       }
     },
     [selectedConversation, addMessageToConversation]
@@ -421,6 +435,8 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
     async (message: string) => {
       currentUserMessageRef.current = message;
       setIsThinking(true);
+      setIsGenerating(true);
+      isGeneratingRef.current = true;
       responseContentRef.current = "";
 
       const success = await wsService.startConversation(message);
@@ -428,10 +444,17 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
       if (!success) {
         console.error("Failed to start conversation");
         setIsThinking(false);
+        setIsGenerating(false);
+        isGeneratingRef.current = false;
       }
     },
     []
   );
+
+  const interruptGeneration = useCallback(() => {
+    if (!isGeneratingRef.current) return;
+    wsService.sendInterrupt();
+  }, []);
 
   const resumeConversation = useCallback(async (conversationId: number) => {
     console.log(`Resuming conversation: ${conversationId}`);
@@ -440,6 +463,16 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
     if (!success) {
       console.error("Failed to resume conversation");
     }
+  }, []);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (isGeneratingRef.current) {
+        wsService.sendInterrupt();
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
   const clearThinkingState = useCallback(() => {
@@ -452,12 +485,14 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
   const contextValue: WebSocketContextType = {
     isConnected,
     isThinking,
+    isGenerating,
     currentThinking,
     finalThinking,
     graphState,
     sendMessage,
     startConversation,
     resumeConversation,
+    interruptGeneration,
     clearThinkingState,
   };
 

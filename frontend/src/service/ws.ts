@@ -3,7 +3,8 @@ import { WEBSOCKET_URL } from "../lib/config";
 export type WSMessageType =
   | "message"
   | "start_conversation"
-  | "resume_conversation";
+  | "resume_conversation"
+  | "interrupt";
 
 export type WSResponseType =
   | "thinking_start"
@@ -38,6 +39,10 @@ export interface WSMessagePayload extends WSBasePayload {
 export interface WSResumeConversationPayload extends WSBasePayload {
   type: "resume_conversation";
   convo_id: number;
+}
+
+export interface WSInterruptPayload extends WSBasePayload {
+  type: "interrupt";
 }
 
 export interface WSResponse {
@@ -277,6 +282,16 @@ class WebSocketService {
     };
 
     return this.sendPayload(payload);
+  }
+
+  public sendInterrupt(): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.ws.send(JSON.stringify({ type: "interrupt" }));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async sendPayload(payload: WSBasePayload): Promise<boolean> {

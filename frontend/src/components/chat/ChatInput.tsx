@@ -1,6 +1,6 @@
 import React, { useRef, KeyboardEvent, ChangeEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
-import { Send } from "lucide-react";
+import { Send, Square } from "lucide-react";
 import { useWebSocket } from "../../providers/WebSocketProvider";
 
 interface ChatInputProps {
@@ -12,11 +12,16 @@ const ChatInput = ({ conversationId }: ChatInputProps) => {
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const { isConnected, isThinking, sendMessage, startConversation } =
-    useWebSocket();
+  const {
+    isConnected,
+    isGenerating,
+    sendMessage,
+    startConversation,
+    interruptGeneration,
+  } = useWebSocket();
 
   const handleSubmit = async () => {
-    if (!input.trim() || isSubmitting || !isConnected || isThinking) return;
+    if (!input.trim() || isSubmitting || !isConnected || isGenerating) return;
 
     setIsSubmitting(true);
 
@@ -45,16 +50,14 @@ const ChatInput = ({ conversationId }: ChatInputProps) => {
     setInput(e.target.value);
   };
 
-  const isDisabled =
-    !isConnected || isSubmitting || !input.trim() || isThinking;
+  const isSendDisabled =
+    !isConnected || isSubmitting || !input.trim() || isGenerating;
 
   return (
     <div className="border-t border-gray-800 bg-gray-950 p-4">
       <div className="max-w-4xl mx-auto">
         <div className="relative flex flex-col gap-2">
 
-
-          {/* Input area */}
           <div className="relative flex items-start">
             <TextareaAutosize
               ref={textareaRef}
@@ -66,17 +69,28 @@ const ChatInput = ({ conversationId }: ChatInputProps) => {
               minRows={1}
               maxRows={5}
             />
-            <button
-              onClick={handleSubmit}
-              className={`absolute right-2 bottom-2.5 p-1.5 rounded-lg transition-colors ${input.trim()
-                  ? "bg-purple-600 hover:bg-purple-500 text-white"
-                  : "bg-gray-700 text-gray-400 cursor-not-allowed"
+            {isGenerating ? (
+              <button
+                onClick={interruptGeneration}
+                className="absolute right-2 bottom-2.5 p-1.5 rounded-lg transition-colors bg-red-600 hover:bg-red-500 text-white"
+                aria-label="Detener generación"
+              >
+                <Square className="w-4 h-4 fill-current" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSubmit}
+                className={`absolute right-2 bottom-2.5 p-1.5 rounded-lg transition-colors ${
+                  input.trim()
+                    ? "bg-purple-600 hover:bg-purple-500 text-white"
+                    : "bg-gray-700 text-gray-400 cursor-not-allowed"
                 }`}
-              disabled={isDisabled}
-              aria-label="Enviar mensaje"
-            >
-              <Send className="w-4 h-4" />
-            </button>
+                disabled={isSendDisabled}
+                aria-label="Enviar mensaje"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
           </div>
 
           <div className="text-xs text-gray-500">
