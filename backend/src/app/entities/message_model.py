@@ -7,7 +7,7 @@ from sqlmodel import SQLModel, Field, Relationship
 from app.schemas.conversation_schema import RoleEnum
 
 if TYPE_CHECKING:
-    from app.models.conversation_model import Conversation
+    from app.entities.conversation_model import Conversation
 
 
 class Message(SQLModel, table=True):
