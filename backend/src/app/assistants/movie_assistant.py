@@ -212,7 +212,7 @@ async def retrieve(state: AgentState):
 
 async def generate(state: AgentState):
     """
-    Generate technical response about movies.
+    Generate technical response about movies using the reformulated question.
 
     Args:
         state: Current agent state
@@ -220,7 +220,7 @@ async def generate(state: AgentState):
     Returns:
         Updated state with generation and messages
     """
-    question = state["question"]
+    question = state["reformulated_question"]
     documents = state["documents"]
     chat_history = format_history(state["messages"])
 
@@ -238,7 +238,7 @@ async def generate(state: AgentState):
 
 async def generate_general(state: AgentState):
     """
-    Handle general chat with memory.
+    Handle general chat using the reformulated question.
 
     Args:
         state: Current agent state
@@ -246,7 +246,7 @@ async def generate_general(state: AgentState):
     Returns:
         Updated state with generation and messages
     """
-    question = state["question"]
+    question = state["reformulated_question"]
     chat_history = format_history(state["messages"])
 
     prompt = ChatPromptTemplate.from_template(GENERATE_GENERAL_PROMPT)

@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -67,11 +69,24 @@ async def add_message(
         thinking_time=thinking_time,
     )
     db.add(msg)
-    # touch updated_at
-    await db.exec(select(Conversation).where(Conversation.id == conversation_id))
+    convo = await db.get(Conversation, conversation_id)
+    if convo:
+        convo.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(msg)
     return msg
+
+
+async def update_message_content(
+    db: AsyncSession,
+    message_id: int,
+    content: str,
+) -> None:
+    """Update only the contextualized content of a message, keeping raw_content intact."""
+    msg = await db.get(Message, message_id)
+    if msg:
+        msg.content = content
+        await db.commit()
 
 
 async def get_conversation(
@@ -118,23 +133,24 @@ async def get_conversation_with_messages(
     
 async def get_conversation_with_messages_limited(
     conversation_id: int, db: AsyncSession, number_of_messages: int = 10
-) -> Conversation | None:
+) -> list[Message] | None:
     """
-    Get a conversation with messages.
-    
-    Args:
-        conversation_id: The ID of the conversation.
-        db: The database session.
-        number_of_messages: The number of messages to get.
+    Get a conversation with only the latest number_of_messages loaded.
+    """
+    convo_stmt = select(Conversation.id).where(Conversation.id == conversation_id)
+    convo_result = await db.exec(convo_stmt)
+    convo_id = convo_result.one_or_none()
+    if convo_id is None:
+        return None
 
-    Returns:
-        The conversation with messages.
-    Raises:
-        SQLAlchemyError: If there is an error getting the conversation with messages.
-    """
-    stmt = select(Conversation).where(Conversation.id == conversation_id).options(selectinload(Conversation.messages)).limit(number_of_messages)
-    result = await db.exec(stmt)
-    return result.one_or_none()
+    msg_stmt = (
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.id.desc())
+        .limit(number_of_messages)
+    )
+    msg_result = await db.exec(msg_stmt)
+    return list(reversed(msg_result.all()))
 
 async def list_conversations(
     db: AsyncSession, use_case: str | None = None
