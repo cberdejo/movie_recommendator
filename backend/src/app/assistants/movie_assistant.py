@@ -166,7 +166,7 @@ def router(state: AgentState):
 
     prompt = ChatPromptTemplate.from_template(ROUTER_PROMPT)
 
-    chain = prompt | llm_primary | StrOutputParser()
+    chain = prompt | llm_secondary | StrOutputParser()
     decision = chain.invoke({"question": question})
 
     decision = decision.strip().upper().replace(".", "")
