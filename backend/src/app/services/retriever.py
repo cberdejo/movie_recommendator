@@ -18,8 +18,16 @@ class HybridSearcher:
         self.async_qdrant_client = AsyncQdrantClient(url=url)
         self.reranker = TextCrossEncoder(model_name=self.reranker_model_name)
 
-    async def create_collection(self):
-        """Create the Qdrant collection with hybrid vector configuration."""
+    async def create_collection(self, recreate: bool = False):
+        """
+        Create the Qdrant collection with hybrid vector configuration.
+        If recreate is True, the collection will be deleted if it exists.
+        """
+        if recreate and await self.async_qdrant_client.collection_exists(
+            self.collection_name
+        ):
+            await self.async_qdrant_client.delete_collection(self.collection_name)
+
         if not await self.async_qdrant_client.collection_exists(self.collection_name):
             await self.async_qdrant_client.create_collection(
                 collection_name=self.collection_name,
@@ -36,7 +44,7 @@ class HybridSearcher:
                 },
             )
 
-    async def index(self, chunks: list[Document]):
+    async def index(self, chunks: list[Document], verbose: bool = False):
         """Index documents into the Qdrant collection."""
         vectors = []
         payload = []
@@ -61,7 +69,7 @@ class HybridSearcher:
             )
         self.async_qdrant_client.upload_collection(
             collection_name=self.collection_name,
-            vectors=tqdm.tqdm(vectors),
+            vectors=tqdm.tqdm(vectors) if verbose else vectors,
             payload=payload,
         )
 

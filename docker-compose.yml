@@ -57,7 +57,7 @@ services:
     depends_on:
       - qdrant
     working_dir: /app
-    command: ["python", "-m", "app.db.populate_movies_qdrant"]
+    command: ["python", "-m", "app.etl.populate_qdrant_movies"]
     profiles:
       - init
     env_file:
