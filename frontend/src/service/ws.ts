@@ -13,7 +13,7 @@ export type WSResponseType =
   | "conversation_started"
   | "conversation_resumed"
   | "response_chunk"
-  | "done"
+  | "response_done"
   | "error"
   | "graph_start"
   | "graph_end"
@@ -61,6 +61,7 @@ export type WSEventType =
   | "response_chunk"
   | "response_done"
   | "error"
+  | "interrupt_ack"
   | "graph_start"
   | "graph_end"
   | "node_start"
@@ -215,7 +216,7 @@ class WebSocketService {
           this.triggerEvent("response_chunk", response.content);
           break;
 
-        case "done":
+        case "response_done":
           this.triggerEvent("response_done", null);
           break;
 
