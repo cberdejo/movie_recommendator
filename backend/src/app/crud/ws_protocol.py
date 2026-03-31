@@ -1,15 +1,14 @@
+"""
+WebSocket protocol helpers: parsing, response building and safe sending.
+"""
+
 import json
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
-from app.schemas.ws_schemas import WSRequest, WSResponse
-
-
-def parse_ws_request(payload: str) -> WSRequest:
-    """Parse and validate a raw websocket payload."""
-    return WSRequest.model_validate_json(payload)
+from app.schemas.ws_schemas import WSResponse
 
 
 def build_error_response(
@@ -17,7 +16,7 @@ def build_error_response(
     error_code: str,
     retryable: bool = True,
 ) -> WSResponse:
-    """Create a normalized error payload for websocket clients."""
+    """Create a normalised error payload for WebSocket clients."""
     return WSResponse(
         type="error",
         content=message,
@@ -27,7 +26,7 @@ def build_error_response(
 
 
 def request_validation_error(err: ValidationError | json.JSONDecodeError) -> WSResponse:
-    """Map payload validation errors to a user-safe response."""
+    """Map payload validation / JSON errors to a safe client response."""
     return build_error_response(
         message="Invalid websocket request payload.",
         error_code="invalid_request",
@@ -36,15 +35,21 @@ def request_validation_error(err: ValidationError | json.JSONDecodeError) -> WSR
 
 
 async def send_if_open(websocket: WebSocket, text: str) -> None:
-    """Send text only if websocket remains connected."""
+    """Send *text* only when the WebSocket is still connected.
+
+    Silently drops the frame on any transport error so callers never
+    need to guard against a closed socket themselves.
+    """
     if websocket.client_state != WebSocketState.CONNECTED:
         return
     try:
         await websocket.send_text(text)
-    except (WebSocketDisconnect, RuntimeError):
+    except Exception:
+        # Covers WebSocketDisconnect, RuntimeError("websocket is not connected"),
+        # and any other transport-level error.
         return
 
 
 async def send_response(websocket: WebSocket, response: WSResponse) -> None:
-    """Send a typed websocket response."""
+    """Serialise *response* and deliver it via send_if_open."""
     await send_if_open(websocket, response.model_dump_json())
