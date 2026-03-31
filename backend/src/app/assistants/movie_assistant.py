@@ -4,12 +4,11 @@ LangGraph assistant for movie recommendations with semantic search.
 
 import logging
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langchain_openai import ChatOpenAI
 
@@ -18,7 +17,8 @@ from app.prompts import (
     CONTEXTUALIZE_SYSTEM_PROMPT,
     CONTEXTUALIZE_USER_PROMPT,
     GENERATE_GENERAL_PROMPT,
-    GENERATE_PROMPT,
+    GENERATE_RETRIEVE_PROMPT,
+    REASK_USER_PROMPT,
     ROUTER_PROMPT,
 )
 from app.services.retriever import HybridSearcher
@@ -31,19 +31,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Retrieval quality thresholds
+# Tune these values against your Qdrant collection's score distribution.
+# ---------------------------------------------------------------------------
+RETRIEVAL_SCORE_THRESHOLD = (
+    0.55  # minimum acceptable best-result score — tune to your collection
+)
 
-class AgentState(TypedDict):
-    """State for the movie recommendation agent."""
-
-    messages: Annotated[list[AnyMessage], operator.add]
-    question: str
-    reformulated_question: str
-    documents: list[str]
-    generation: str
-    decision: str
-
-
-# Primary LLM configuration (most intelligent model - for main generation)
+# ---------------------------------------------------------------------------
+# LLM singletons (one per worker process — intentional, see ws_movies.py)
+# ---------------------------------------------------------------------------
 llm_primary = ChatOpenAI(
     base_url=llmsettings.openai_base_url,
     model="primary-llm",
@@ -51,7 +49,6 @@ llm_primary = ChatOpenAI(
     temperature=0.7,
     max_retries=2,
 )
-# Secondary LLM configuration (for contextualization)
 llm_secondary = ChatOpenAI(
     base_url=llmsettings.openai_base_url,
     model="secondary-llm",
@@ -60,247 +57,335 @@ llm_secondary = ChatOpenAI(
     max_retries=2,
 )
 
-
-# HybridSearcher instance
+# HybridSearcher singleton
 searcher = HybridSearcher(
-    url=qdrantsettings.qdrant_endpoint, collection_name=qdrantsettings.qdrant_collection
+    url=qdrantsettings.qdrant_endpoint,
+    collection_name=qdrantsettings.qdrant_collection,
 )
 
 
+# ---------------------------------------------------------------------------
+# Agent state
+# ---------------------------------------------------------------------------
+
+
+class AgentState(TypedDict):
+    """
+    State threaded through every node of the graph.
+    messages: The list of messages.
+    decision: The decision of the router.
+    media_type: The media type of the question.
+    documents: The list of documents.
+    generation: The generation of the question.
+    needs_reask: The needs reask of the question.
+
+    """
+
+    messages: Annotated[list[AnyMessage], operator.add]
+    decision: str  # "RETRIEVE" | "GENERAL"
+    media_type: str  # "movie" | "series" | "any"
+    documents: list[str]
+    generation: str
+    needs_reask: bool
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def contextualize_question_background(
+    messages: list[AnyMessage],
+    raw_question: str,
+) -> str:
+    """
+    Produce a self-contained rewrite of *raw_question* given *messages*.
+
+    This is called as a fire-and-forget asyncio task after generation
+    completes; its result is stored externally by the caller (ws_movies.py)
+    and injected into the *next* turn's state as ``pre_contextualized_question``.
+
+    Returns the reformulated question, or *raw_question* on any error.
+    """
+    history_str = format_history(messages)
+    if "No previous history" in history_str:
+        return raw_question
+
+    try:
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", CONTEXTUALIZE_SYSTEM_PROMPT),
+                ("human", CONTEXTUALIZE_USER_PROMPT),
+            ]
+        )
+        chain = prompt | llm_secondary | StrOutputParser()
+        result = await chain.ainvoke(
+            {"chat_history": history_str, "question": raw_question}
+        )
+        logger.info("contextualize_background: %r → %r", raw_question, result)
+        return result.strip() or raw_question
+    except Exception:
+        logger.exception(
+            "contextualize_background failed, falling back to raw question"
+        )
+        return raw_question
+
+
 def format_history(messages: list[AnyMessage]) -> str:
-    """
-    Convert the list of messages into formatted text.
+    """Flatten and format recent messages as a readable history string.
 
-    Args:
-        messages: List of message objects
+    This will return something like this:
+        User: What is the capital of France?
+        Assistant: The capital of France is Paris.
+        User: What is the capital of Germany?
+        Assistant: The capital of Germany is Berlin.
 
-    Returns:
-        Formatted string with conversation history
+
     """
-    flat_messages = []
+    flat: list[AnyMessage] = []
     for m in messages:
         if isinstance(m, list):
-            flat_messages.extend(m)
+            flat.extend(m)
         else:
-            flat_messages.append(m)
+            flat.append(m)
 
-    if len(flat_messages) < 2:
+    if len(flat) < 2:
         return "No previous history."
 
-    history_messages = flat_messages[:-1]
-
-    formatted = []
-    for msg in history_messages:
-        role = "Assistant"
-        content = ""
-
+    window = flat[:-1][-llmsettings.number_of_messages_to_contextualize :]
+    lines = []
+    for msg in window:
         if hasattr(msg, "type"):
             role = "User" if msg.type == "human" else "Assistant"
             content = msg.content
         elif isinstance(msg, dict):
-            msg_type = msg.get("type") or msg.get("role")
-            role = "User" if msg_type in ["human", "user"] else "Assistant"
+            msg_type = msg.get("type") or msg.get("role", "")
+            role = "User" if msg_type in ("human", "user") else "Assistant"
             content = msg.get("content", "")
-        formatted.append(f"{role}: {content}")
+        else:
+            role, content = "Unknown", str(msg)
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
 
-    # Join last 6 messages for context
-    return "\n".join(formatted[-llmsettings.number_of_messages_to_contextualize:])
+
+def _extract_last_human_message(messages: list[AnyMessage]) -> str:
+    """Extract the last human message from the list of messages."""
+    last = messages[-1]
+    if isinstance(last, HumanMessage):
+        return last.content
+    if isinstance(last, tuple):
+        return last[1]
+    if isinstance(last, dict):
+        return last.get("content", "")
+    return str(last)
 
 
-async def contextualize_question(state: AgentState):
+def _retrieval_quality_ok(results: list[dict[str, Any]]) -> bool:
+    """Return True when the best Qdrant score meets the minimum threshold."""
+    if not results:
+        return False
+    return results[0].get("score", 0.0) >= RETRIEVAL_SCORE_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# Graph nodes
+# ---------------------------------------------------------------------------
+
+
+async def router_node(state: AgentState) -> dict:
     """
-    Rewrite the user's question based on conversation history to make it self-contained.
-    Solves issues like 'make it shorter' or 'explain that'.
-
+    Classify the question into intent + media_type in one LLM call.
     Args:
-        state: Current agent state
-
+        state: The state of the agent.
     Returns:
-        Updated state with reformulated question
+        The decision and the media type.
     """
-    # Extract the last user message
-    last_message = state["messages"][-1]
-    if isinstance(last_message, tuple):
-        raw_question = last_message[1]
-    elif isinstance(last_message, HumanMessage):
-        raw_question = last_message.content
-    elif isinstance(last_message, dict):
-        raw_question = last_message.get("content", "")
-    else:
-        raw_question = str(last_message)
-
-    history_str = format_history(state["messages"])
-
-    if "No previous history" in history_str:
-        # If no history, the question is as-is
-        return {"reformulated_question": raw_question, "question": raw_question}
-
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", CONTEXTUALIZE_SYSTEM_PROMPT),
-            ("human", CONTEXTUALIZE_USER_PROMPT),
-        ]
-    )
-
-    chain = prompt | llm_secondary | StrOutputParser()
-    reformulated = await chain.ainvoke(
-        {"chat_history": history_str, "question": raw_question}
-    )
-
-    logger.info(f"Original Question: '{raw_question}' | Reformulated: '{reformulated}'")
-
-    return {"reformulated_question": reformulated, "question": raw_question}
-
-
-def router(state: AgentState):
-    """
-    Classify the question using the REFORMULATED question.
-
-    Args:
-        state: Current agent state
-
-    Returns:
-        Updated state with decision
-    """
-    question = state["reformulated_question"]
-
+    question = _extract_last_human_message(state["messages"])
     prompt = ChatPromptTemplate.from_template(ROUTER_PROMPT)
-
     chain = prompt | llm_secondary | StrOutputParser()
-    decision = chain.invoke({"question": question})
+    raw = await chain.ainvoke({"question": question})
 
-    decision = decision.strip().upper().replace(".", "")
-    if "RETRIEVE" not in decision:
-        decision = "GENERAL"
+    decision = "GENERAL"
+    media_type = "any"
 
-    logger.info(f"Intent detected: {decision} (Input: '{question}')")
+    try:
+        import json as _json
 
-    return {"decision": decision}
+        parsed = _json.loads(raw.strip())
+        intent = parsed.get("intent", "GENERAL").strip().upper()
+        decision = "RETRIEVE" if "RETRIEVE" in intent else "GENERAL"
+        media_type = parsed.get("media_type", "any").strip().lower()
+        if media_type not in ("movie", "series", "any"):
+            media_type = "any"
+    except Exception:
+        if "RETRIEVE" in raw.strip().upper():
+            decision = "RETRIEVE"
+        logger.warning("router: could not parse JSON %r, using defaults", raw)
+
+    logger.info(
+        "router: intent=%s  media_type=%s  question=%r", decision, media_type, question
+    )
+    return {"decision": decision, "media_type": media_type}
 
 
-async def retrieve(state: AgentState):
+async def retrieve(state: AgentState) -> dict:
     """
-    Retrieve documents using the REFORMULATED question.
+    Hybrid search with optional media-type pre-filter.
 
-    Args:
-        state: Current agent state
-
-    Returns:
-        Updated state with retrieved documents
+    Sets ``needs_reask=True`` when the best Qdrant score falls below
+    RETRIEVAL_SCORE_THRESHOLD so the graph can route to ``reask_user``
+    instead of attempting a generation with poor context.
     """
-    query = state["reformulated_question"]
+    query = _extract_last_human_message(state["messages"])
+    media_type = state.get("media_type", "any")
+    qdrant_filter = _build_media_filter(media_type)
 
-    results = await searcher.search(text=query, rerank=True)
+    logger.info("retrieve: query=%r  media_type=%s", query, media_type)
+    results = await searcher.search(text=query, rerank=True, filter=qdrant_filter)
 
-    logger.info(f"Searching documents for: '{query}'")
-    logger.info(f"Documents retrieved: {len(results)}")
-
-    if results:
-        snippet_1 = results[0].get("page-content", "")[:100]
-        snippet_2 = (
-            results[1].get("page-content", "")[:100] if len(results) > 1 else "N/A"
-        )
-        logger.info(f"Top 1 Snippet: {snippet_1}...")
-        logger.debug(f"Top 2 Snippet: {snippet_2}...")
-    else:
-        logger.warning("WARNING! No relevant documents found.")
+    quality_ok = _retrieval_quality_ok(results)
+    best_score = results[0].get("score", 0.0) if results else 0.0
+    logger.info(
+        "retrieve: %d docs  best_score=%.3f  quality_ok=%s",
+        len(results),
+        best_score,
+        quality_ok,
+    )
 
     docs_content = [doc.get("page-content", "") for doc in results]
+    return {"documents": docs_content, "needs_reask": not quality_ok}
 
-    return {"documents": docs_content}
 
-
-async def generate(state: AgentState):
-    """
-    Generate technical response about movies using the reformulated question.
-
-    Args:
-        state: Current agent state
-
-    Returns:
-        Updated state with generation and messages
-    """
-    question = state["reformulated_question"]
-    documents = state["documents"]
+async def generate_retrieve(state: AgentState) -> dict:
+    """Generate a movie-specific response using retrieved documents."""
+    query = _extract_last_human_message(state["messages"])
+    context_str = "\n\n---\n\n".join(state["documents"])
     chat_history = format_history(state["messages"])
 
-    context_str = "\n\n---\n\n".join(documents)
-
-    prompt = ChatPromptTemplate.from_template(GENERATE_PROMPT)
-
+    prompt = ChatPromptTemplate.from_template(GENERATE_RETRIEVE_PROMPT)
     chain = prompt | llm_primary | StrOutputParser()
     response = await chain.ainvoke(
-        {"context": context_str, "question": question, "chat_history": chat_history}
+        {
+            "context": context_str,
+            "question": question,
+            "chat_history": chat_history,
+        }
     )
-
     return {"generation": response, "messages": [AIMessage(content=response)]}
 
 
-async def generate_general(state: AgentState):
-    """
-    Handle general chat using the reformulated question.
-
-    Args:
-        state: Current agent state
-
-    Returns:
-        Updated state with generation and messages
-    """
-    question = state["reformulated_question"]
+async def generate_general(state: AgentState) -> dict:
+    """Handle general (non-retrieval) conversation turns."""
+    question = _extract_last_human_message(state["messages"])
     chat_history = format_history(state["messages"])
 
     prompt = ChatPromptTemplate.from_template(GENERATE_GENERAL_PROMPT)
     chain = prompt | llm_primary | StrOutputParser()
     response = await chain.ainvoke({"question": question, "chat_history": chat_history})
-
     return {"generation": response, "messages": [AIMessage(content=response)]}
 
 
-def route_decision(state: AgentState):
+async def reask_user(state: AgentState) -> dict:
     """
-    Route based on the decision.
+    Ask the user for more details when retrieval quality is too low.
 
-    Args:
-        state: Current agent state
-
-    Returns:
-        Next node name
+    Uses the secondary LLM to produce a natural clarifying question that
+    prompts the user for specifics (actor, genre, year, mood, etc.).
+    This node ends the current turn; the user's next message will contain
+    the missing context and trigger a fresh retrieve → generate cycle.
     """
-    if state["decision"] == "RETRIEVE":
-        return "retrieve"
-    else:
-        return "generate_general"
+    question = _extract_last_human_message(state["messages"])
+
+    prompt = ChatPromptTemplate.from_template(REASK_USER_PROMPT)
+    chain = prompt | llm_secondary | StrOutputParser()
+
+    try:
+        response = await chain.ainvoke({"question": question})
+        response = response.strip()
+    except Exception:
+        logger.exception("reask_user: LLM call failed, using generic fallback")
+        response = (
+            "I couldn't find enough information to answer your question well. "
+            "Could you give me more details? For example: the title, a specific actor "
+            "or director, the genre, or roughly when it was released?"
+        )
+
+    logger.info("reask_user: question=%r  reask=%r", question, response)
+    return {"generation": response, "messages": [AIMessage(content=response)]}
+
+
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+
+
+def route_decision(state: AgentState) -> str:
+    return "retrieve" if state["decision"] == "RETRIEVE" else "generate_general"
+
+
+def route_after_retrieve(state: AgentState) -> str:
+    """Route to reask_user when retrieval quality was insufficient."""
+    return "reask_user" if state.get("needs_reask") else "generate_retrieve"
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_media_filter(media_type: str) -> dict | None:
+    """Build a Qdrant must-filter for the indexed media type payload field."""
+    if media_type == "any":
+        return None
+    return {"must": [{"key": "metadata.type", "match": {"value": media_type}}]}
+
+
+# ---------------------------------------------------------------------------
+# Graph construction
+# ---------------------------------------------------------------------------
 
 
 def build_app():
     """
-    Build and compile the LangGraph application.
+    Build and compile the LangGraph workflow.
 
-    Returns:
-        Compiled LangGraph application
+    Graph topology:
+                    START
+                    │
+                [router]
+                ╱        ╲
+        RETRIEVE      GENERAL
+            │                ╲
+        [retrieve]    [generate_general]
+            ╱     ╲             │
+        OK     POOR             │
+        ╱           ╲           │
+        [generate_retrieve] [reask_user]
+                ╲        ╱        │
+                    END ←───────╯
+
     """
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("contextualize", contextualize_question)
-    workflow.add_node("router", router)
+    workflow.add_node("router", router_node)
     workflow.add_node("retrieve", retrieve)
-    workflow.add_node("generate", generate)
+    workflow.add_node("generate_retrieve", generate_retrieve)
     workflow.add_node("generate_general", generate_general)
+    workflow.add_node("reask_user", reask_user)
 
-    workflow.add_edge(START, "contextualize")
-    workflow.add_edge("contextualize", "router")
-
+    workflow.add_edge(START, "router")
     workflow.add_conditional_edges(
         "router",
         route_decision,
-        {
-            "retrieve": "retrieve",
-            "generate_general": "generate_general",
-        },
+        {"retrieve": "retrieve", "generate_general": "generate_general"},
     )
-
-    workflow.add_edge("retrieve", "generate")
-    workflow.add_edge("generate", END)
+    workflow.add_conditional_edges(
+        "retrieve",
+        route_after_retrieve,
+        {"generate_retrieve": "generate_retrieve", "reask_user": "reask_user"},
+    )
+    workflow.add_edge("generate_retrieve", END)
     workflow.add_edge("generate_general", END)
+    workflow.add_edge("reask_user", END)
 
     return workflow.compile()
