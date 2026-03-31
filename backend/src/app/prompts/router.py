@@ -1,11 +1,20 @@
-"""Prompt for intent classification router."""
+"""Prompts for intent routing and search-query fallback."""
 
-ROUTER_PROMPT = """You are an intent classifier for a movie recommendation assistant.
+ROUTER_PROMPT = """You are an intent classifier for a movie/series recommendation assistant.
 
-        Analyze the following user input: "{question}"
+User input: "{question}"
 
-        Instructions:
-        1. If the input is about movies, movie recommendations, actors, directors, genres, ratings, or closely related movie topics: Respond "RETRIEVE".
-        2. If it is a greeting, farewell, thanks, or a question off-topic (cooking, sports, code, etc): Respond "GENERAL".
+Respond ONLY with valid JSON using exactly these keys:
+- "intent": either "RETRIEVE" or "GENERAL"
+- "media_type": either "movie", "series", or "any"
 
-        Response (ONLY one word):"""
+Rules:
+- intent: RETRIEVE if the user asks about finding or recommending films, series, or streaming content, or about movies, actors, directors, genres, ratings, or closely related entertainment topics. GENERAL for greetings, farewells, thanks, or off-topic questions (cooking, sports, programming, etc.).
+- media_type: "movie" if they explicitly mean a film/movie, "series" if a series, show, or TV, otherwise "any".
+Examples:
+- {{"intent": "RETRIEVE", "media_type": "movie"}}
+- {{"intent": "RETRIEVE", "media_type": "series"}}
+- {{"intent": "RETRIEVE", "media_type": "any"}}
+- {{"intent": "GENERAL"}}
+
+Output raw JSON only, no markdown."""

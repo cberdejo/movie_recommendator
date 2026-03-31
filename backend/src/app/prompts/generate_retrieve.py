@@ -1,6 +1,6 @@
 """Prompt for movie recommendation generation with context."""
 
-GENERATE_PROMPT = """You are a movie recommendation assistant. You help users find movies based on their preferences, answer questions about movies, actors, directors, genres, and provide movie recommendations.
+GENERATE_RETRIEVE_PROMPT = """You are a movie recommendation assistant. You help users find movies based on their preferences, answer questions about movies, actors, directors, genres, and provide movie recommendations.
 
         RETRIEVED CONTEXT:
         {context}
