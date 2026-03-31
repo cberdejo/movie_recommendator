@@ -43,7 +43,7 @@ async def add_message(
 ) -> Message:
     """
     Add a message to a conversation.
-    
+
     Args:
         db: The database session.
         conversation_id: The ID of the conversation.
@@ -94,7 +94,7 @@ async def get_conversation(
 ) -> Conversation | None:
     """
     Get a conversation with messages.
-    
+
     Args:
         conversation_id: The ID of the conversation.
         db: The database session.
@@ -109,12 +109,13 @@ async def get_conversation(
     result = await db.exec(stmt)
     return result.one_or_none()
 
+
 async def get_conversation_with_messages(
     conversation_id: int, db: AsyncSession, number_of_messages: int = 10
 ) -> Conversation | None:
     """
     Get a conversation with messages.
-    
+
     Args:
         conversation_id: The ID of the conversation.
         db: The database session.
@@ -125,12 +126,16 @@ async def get_conversation_with_messages(
     Raises:
         SQLAlchemyError: If there is an error getting the conversation with messages.
     """
-    
-    stmt = select(Conversation).where(Conversation.id == conversation_id).options(selectinload(Conversation.messages))
+
+    stmt = (
+        select(Conversation)
+        .where(Conversation.id == conversation_id)
+        .options(selectinload(Conversation.messages))
+    )
     result = await db.exec(stmt)
     return result.one_or_none()
 
-    
+
 async def get_conversation_with_messages_limited(
     conversation_id: int, db: AsyncSession, number_of_messages: int = 10
 ) -> list[Message] | None:
@@ -152,12 +157,13 @@ async def get_conversation_with_messages_limited(
     msg_result = await db.exec(msg_stmt)
     return list(reversed(msg_result.all()))
 
+
 async def list_conversations(
     db: AsyncSession, use_case: str | None = None
 ) -> list[Conversation]:
     """
     List conversations.
-    
+
     Args:
         db: The database session.
         use_case: The use case for the conversations.
