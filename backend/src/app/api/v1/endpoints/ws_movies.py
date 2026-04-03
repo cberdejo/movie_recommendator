@@ -1,7 +1,7 @@
 from fastapi import APIRouter, WebSocket, Depends
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.db.session import get_session
-from app.crud.ws_movies import ws_handler_movies
+from app.websocket.handler import ws_handler_movies
 
 router = APIRouter()
 
