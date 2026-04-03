@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 MAX_REASK_COUNT = 1
 RETRIEVAL_SCORE_THRESHOLD = (
-    0.30  # minimum acceptable best-result score — tune to your collection
+    0.5  # minimum acceptable best-result score — tune to your collection
 )
 
 
