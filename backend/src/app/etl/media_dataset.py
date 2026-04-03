@@ -175,7 +175,6 @@ def load_unified(csv_movies_only: str | Path, csv_mixed: str | Path) -> list[Med
                     description=r.get("description") or None,
                     duration_min=parse_duration_minutes(r.get("duration")),
                     media_type=normalize_media_type(r.get("type")) or None,
-
                 )
             )
 

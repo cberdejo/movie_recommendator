@@ -1,4 +1,5 @@
 """Prompt for the router."""
+
 # Keep this as a plain template string so ChatPromptTemplate can inject {question}.
 ROUTER_PROMPT = """You are a strict intent classifier for a movie/series recommendation assistant.
 

@@ -15,7 +15,6 @@ class MediaItem(BaseModel):
         None, description="Original source type label, if provided by the dataset"
     )
 
-
     class Config:
         extra = "ignore"
 

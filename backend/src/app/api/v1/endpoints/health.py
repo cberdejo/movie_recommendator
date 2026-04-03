@@ -25,7 +25,9 @@ async def health_check():
     try:
         base_url = llmsettings.openai_base_url.rstrip("/")
         health_url = (
-            f"{base_url[:-3]}/models" if base_url.endswith("/v1") else f"{base_url}/models"
+            f"{base_url[:-3]}/models"
+            if base_url.endswith("/v1")
+            else f"{base_url}/models"
         )
 
         async with httpx.AsyncClient() as client:
