@@ -41,18 +41,23 @@ The frontend is a chat interface that connects to the backend via WebSocket, all
 movie_recommendator/
 ├── backend/                    # API FastAPI + LangGraph + Qdrant
 │   ├── src/app/
-│   │   ├── api/v1/endpoints/   # REST and WebSocket routes
-│   │   ├── assistants/         # Assistant (movie_assistant) and LangGraph flow
-│   │   ├── core/config/        # Configuration (settings, Qdrant, etc.)
-│   │   ├── crud/               # WebSocket logic and handlers (ws_movies)
-│   │   ├── db/                 # Qdrant population (populate_movies_qdrant)
-│   │   └── services/           # Hybrid retriever (retriever.py)
+│   │   ├── api/v1/endpoints/   # REST and WebSocket routes (thin layer)
+│   │   ├── assistants/         # LangGraph state machine (movie_assistant)
+│   │   ├── core/config/        # Settings and logging
+│   │   ├── crud/               # DB access layer (conversation_crud)
+│   │   ├── db/                 # Session factory and schema init
+│   │   ├── entities/           # SQLModel ORM models (Conversation, Message)
+│   │   ├── etl/                # Qdrant population from Kaggle datasets
+│   │   ├── prompts/            # LLM prompt templates per graph node
+│   │   ├── schemas/            # Pydantic request/response schemas
+│   │   ├── services/           # Retriever, LLM client, history compressor
+│   │   └── websocket/          # WebSocket layer (handler, generation, session, protocol)
 │   ├── litellm_config.yaml     # LiteLLM model configuration (see LiteLLM)
 │   ├── pyproject.toml
 │   └── Dockerfile
 ├── frontend/                   # Chat UI (React + Vite)
 │   ├── src/
-│   │   ├── components/chat/    # ChatView, ChatInput, Sidebar
+│   │   ├── components/chat/    # ChatView, ChatInput, Sidebar, LangGraphPanel
 │   │   ├── providers/          # WebSocketProvider
 │   │   ├── lib/                # config, api, types
 │   │   └── service/            # ws.ts (WebSocket client)
@@ -139,8 +144,10 @@ The same class is used both to **index** documents (during `populate_movies_qdra
 Users can **stop an in-progress assistant reply** at any time:
 
 1. **Frontend**: The chat UI exposes an interrupt control (e.g. stop button). When clicked, the client sends a WebSocket message with `type: "interrupt"`.
-2. **Backend**: The WebSocket handler (`ws_movies.py`) maintains an `interrupt_event` (e.g. `asyncio.Event`). On `interrupt`, it sets this event and waits for the current generation task to finish. The LangGraph stream loop checks the event each iteration and exits as soon as it is set.
-3. **After interrupt**: The server sends `interrupt_ack` to the client. If the model had already produced some text, that partial reply is kept and the handler appends a short suffix (e.g. `[message interrupted by the user]`) before saving the message to Postgres. So the conversation history still contains the truncated turn plus the interrupt marker.
+2. **Backend**: The WebSocket handler (`websocket/handler.py`) maintains an `interrupt_event` (`asyncio.Event`). On `interrupt`, it sets this event and waits for the current generation task to finish. The LangGraph stream loop in `websocket/generation.py` checks the event each iteration and exits as soon as it is set.
+3. **After interrupt**: The server sends `interrupt_ack` to the client. If the model had already produced some text, that partial reply is kept and the handler appends `[message interrupted by the user]` before saving the message to Postgres. So the conversation history still contains the truncated turn plus the interrupt marker.
+
+This also applies when the client disconnects mid-generation (tab close, page refresh, navigation). The DB write always runs regardless of connection state, so the partial response with the interrupted suffix is preserved and visible when the user returns to the conversation.
 
 
 ### Conversations <a id="change-conversation-name"></a>
@@ -158,32 +165,35 @@ The assistant is implemented as a **LangGraph** state machine in `backend/src/ap
 
 ```mermaid
 flowchart TD
-    START([Start]) --> contextualize[contextualize]
-    contextualize --> router{router}
-    router -->|RETRIEVE| retrieve[retrieve]
+    START([Start]) --> router{router}
+    router -->|RETRIEVE| contextualize[contextualize]
     router -->|GENERAL| generate_general[generate_general]
-    retrieve --> generate[generate]
-    generate --> END1([End])
-    generate_general --> END2([End])
+    contextualize --> retrieve[retrieve]
+    retrieve -->|scores OK or reask exhausted| generate_retrieve[generate_retrieve]
+    retrieve -->|low score, reask allowed| reask_user[reask_user]
+    generate_retrieve --> Finish([End])
+    generate_general --> Finish
+    reask_user --> Finish
 ```
 
 **Node roles:**
 
 | Node | Role |
 |------|------|
-| **contextualize** | Rewrites the last user message using recent chat history so it is self-contained (e.g. “make it shorter” → “make the list of recommendations shorter”). Uses a secondary/smaller LLM. |
-| **router** | Classifies the reformulated question: **RETRIEVE** (needs movies/reviews from the vector DB) or **GENERAL** (general chat, no retrieval). |
-| **retrieve** | Calls **HybridSearcher** with the reformulated question and optional rerank; returns top documents. |
-| **generate** | Builds the final answer from the retrieved context and chat history (RAG path). |
+| **router** | Runs first on the last user message: **RETRIEVE** (needs movies/reviews from the vector DB) or **GENERAL** (general chat, no retrieval), plus **media_type** for Qdrant filtering. Uses a secondary/smaller LLM. |
+| **contextualize** | Only on the RETRIEVE path: rewrites the message using recent chat history so it is self-contained (e.g. “make it shorter” → “make the list of recommendations shorter”). Uses the secondary LLM. |
+| **retrieve** | Calls **HybridSearcher** with the contextualized question and optional rerank; sets **needs_reask** when the best score is below threshold. |
+| **generate_retrieve** | Builds the final answer from retrieved context and chat history (RAG path). |
+| **reask_user** | When retrieval quality is low and re-ask budget allows, asks the user for more specifics; otherwise the graph falls through to **generate_retrieve** (see `route_after_retrieve` in code). |
 | **generate_general** | Answers without retrieval, using only chat history (general path). |
 
 **Frontend visualization of the graph**
 
 The **LangGraph panel** (e.g. `LangGraphPanel.tsx`) shows the same flow in the UI:
 
-- **Node cards**: One card per node (Contextualize, Router, Retrieve, Generate, General Answer). Each card shows an icon, label, short description, and optional **outputs** (e.g. reformulated question, decision, document count) when the backend sends `node_output` events.
+- **Node cards**: One card per node (Router, Contextualize, Retrieve, Generate (RAG), Re-ask, General Answer). Each card shows an icon, label, short description, and optional **outputs** (e.g. reformulated question, decision, document count) when the backend sends `node_output` events.
 - **Status**: Each node has a status—**idle** (gray), **active** (purple, current step), **completed** (green), or **error** (red). The backend drives this via `node_start` / `node_end` and the execution path.
-- **Execution path**: A vertical layout mirrors the Mermaid flow: Start → contextualize → router → then either the retrieve → generate branch or the generate_general branch. Edges (lines/splits) are highlighted (e.g. purple when active, green when completed) so the user sees which branch is taken and which node is running.
+- **Execution path**: A vertical layout mirrors the Mermaid flow: Start → router → on **RETRIEVE**, contextualize → retrieve → then either generate (RAG) or re-ask; on **GENERAL**, generate_general. Edges (lines/splits) are highlighted (e.g. purple when active, green when completed) so the user sees which branch is taken and which node is running.
 - **Live updates**: During streaming, `graph_start` / `graph_end` and `node_start` / `node_end` / `node_output` WebSocket events update the panel so the graph animates in real time and shows the router’s decision and retrieval count without leaving the chat.
 
 
@@ -199,7 +209,7 @@ The Qdrant index is populated from two **Kaggle** datasets (used by default when
    - **Kaggle**: [shivamb/netflix-shows](https://www.kaggle.com/datasets/shivamb/netflix-shows)  
    - Used for mixed movies/TV (e.g. title, director, cast, listed_in, description, type).
 
-Download is done via **kagglehub** inside `backend/src/app/db/populate_movies_qdrant.py` when you run the init/profile without providing `-m` / `-x` paths. You need Kaggle API credentials configured for automatic download; otherwise you can download the datasets from the links above and pass the CSV paths to the script.
+Download is done via **kagglehub** inside `backend/src/app/etl/populate_qdrant_movies.py` when you run the init/profile without providing `-m` / `-x` paths. You need Kaggle API credentials configured for automatic download; otherwise you can download the datasets from the links above and pass the CSV paths to the script.
 
 
 ## How to run <a id="run"></a>
