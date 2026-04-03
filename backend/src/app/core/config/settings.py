@@ -1,14 +1,21 @@
 import os
-from enum import Enum
 from pydantic_settings import BaseSettings
 
 
-class LiteLLMSettings(BaseSettings):
+class LLMSettings(BaseSettings):
+    """
+    Settings for LLM.
+    - url: Base URL of LiteLLM (e.g. http://localhost:4000). We expose openai_base_url with /v1 for ChatOpenAI.
+    - number_of_messages_to_contextualize: Number of messages to contextualize.
+    - message_token_threshold: Message token threshold for summarization.
+    """
+
     # Base URL of LiteLLM (e.g. http://localhost:4000). We expose openai_base_url with /v1 for ChatOpenAI.
     url: str = os.getenv("LITELLM_URL", "http://localhost:4000")
     number_of_messages_to_contextualize: int = os.getenv(
         "NUMBER_OF_MESSAGES_TO_CONTEXTUALIZE", 6
     )
+    message_token_threshold: int = os.getenv("MESSAGE_TOKEN_THRESHOLD", 10)
 
     class Config:
         env_file = ".env"
@@ -40,9 +47,6 @@ class QdrantSettings(BaseSettings):
     )
     reranker_model_name: str = os.getenv(
         "RERANKER_MODEL_NAME", "jinaai/jina-reranker-v2-base-multilingual"
-    )
-    semantic_reranker_model_name: str = os.getenv(
-        "SEMANTIC_RERANKER_MODEL_NAME", "BAAI/bge-reranker-base"
     )
     chunk_size: int = os.getenv("CHUNK_SIZE", 512)
 
@@ -76,4 +80,4 @@ class ApiSettings(BaseSettings):
 
 apisettings = ApiSettings()
 qdrantsettings = QdrantSettings()
-llmsettings = LiteLLMSettings()
+llmsettings = LLMSettings()

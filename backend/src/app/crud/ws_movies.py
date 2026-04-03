@@ -1,29 +1,5 @@
 """
 WebSocket handler for movie recommendations.
-
-Turn N — user message arrives
-─────────────────────────────────────
-add_message(content=raw, raw_content=raw)   ← immediate write to DB
-
-_generate_and_stream()
-  │  reads message history from Postgres:
-  │    previous messages use msg.content (contextualized or raw if fallback)
-  │    the current message is already in Postgres as raw
-  │
-  └─ when finished → launches contextualize_task in background
-
-Turn N (background, while user is reading)
-──────────────────────────────────────────────
-contextualize_question_background() finishes
-  → UPDATE messages SET content = <contextualized> WHERE id = user_msg_id
-     (if the contextualized result equals the raw, no UPDATE is done — saves writes)
-
-Turn N+1 — next message arrives
-─────────────────────────────────────
-_load_langchain_messages() reads from Postgres
-  → the message from turn N already has content = contextualized (if finished in time)
-  → if it didn’t finish in time, content is still raw → natural fallback
-  → pre_contextualized_question in ChatSession is no longer needed
 """
 
 import asyncio
@@ -37,7 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import ValidationError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.assistants.movie_assistant import build_app, summarize_question_background
+from app.assistants.movie_assistant import build_app
 from app.core.config.logger import get_logger
 from app.core.config.settings import llmsettings
 from app.crud.conversation_crud import (
@@ -54,12 +30,11 @@ from app.crud.ws_protocol import (
     send_response,
 )
 from app.schemas.ws_schemas import WSRequest, WSResponse
+from app.services.history_compressor import compress_pair
 
 logger = get_logger("WS_MOVIES_HANDLER")
 
 INTERRUPTED_SUFFIX = "\n\n[message interrupted by the user]"
-
-# Graph nodes that emit progress events to the client.
 
 GRAPH_NODES = frozenset(
     {
@@ -79,26 +54,33 @@ CONVERSATION_MODEL_LABEL = "movie agent v1"
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
+
+
 @dataclass
 class ChatSession:
     """All mutable state for a WebSocket connection.
+
     - convo_id: active conversation.
     - generation_task: running asyncio generation task.
-    - contextualize_task: background contextualization task.
-    - current_msg_id: ID of the current user message.
+    - summarize_task: background summarization task for the previous turn.
+    - current_msg_id: DB id of the previous turn's user message (to be updated).
+    - current_msg_id_assistant: DB id of the previous turn's assistant message (to be updated).
     - interrupt_event: shared interrupt signal with the generation task.
     - client_disconnected: disables DB writes after disconnect.
+    - consecutive_reasks: number of consecutive reask_user nodes.
     """
 
     convo_id: int | None = None
     generation_task: asyncio.Task | None = None
-    contextualize_task: asyncio.Task | None = None
+    summarize_task: asyncio.Task | None = None
     current_msg_id: int | None = None
+    current_msg_id_assistant: int | None = None
     interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
     client_disconnected: bool = False
     consecutive_reasks: int = 0
 
     async def cancel_generation(self) -> None:
+        """Cancel the running generation task if any."""
         if self.generation_task and not self.generation_task.done():
             self.interrupt_event.set()
             self.generation_task.cancel()
@@ -108,19 +90,31 @@ class ChatSession:
                 pass
         self.generation_task = None
 
-    async def collect_contextualization(self, db: AsyncSession) -> None:
-        if self.contextualize_task is None or self.current_msg_id is None:
+    async def collect_summarization(self, db: AsyncSession) -> None:
+        """
+        Await the background summarization result and flush it to the DB.
+        Called at the start of each new turn so the previous turn's messages
+        are updated before new history is loaded.
+        """
+        if self.summarize_task is None:
             return
-        if self.contextualize_task.done():
+        if self.summarize_task.done():
             try:
-                result = self.contextualize_task.result()
-                await update_message_content(db, self.current_msg_id, result)
+                user_summary, assistant_summary = self.summarize_task.result()
+                if self.current_msg_id:
+                    await update_message_content(db, self.current_msg_id, user_summary)
+                if self.current_msg_id_assistant:
+                    await update_message_content(
+                        db, self.current_msg_id_assistant, assistant_summary
+                    )
             except Exception:
                 pass  # fallback: content stays as raw, which is correct
         else:
-            self.contextualize_task.cancel()
-        self.contextualize_task = None
+            self.summarize_task.cancel()
+
+        self.summarize_task = None
         self.current_msg_id = None
+        self.current_msg_id_assistant = None
 
     def reset_interrupt(self) -> None:
         self.interrupt_event.clear()
@@ -134,19 +128,12 @@ class ChatSession:
 async def ws_handler_movies(websocket: WebSocket, db: AsyncSession) -> None:
     """
     Main WebSocket endpoint for movie recommendations.
+
     Request types:
     - interrupt: Interrupt the current generation.
     - start_conversation: Start a new conversation.
     - resume_conversation: Resume a conversation.
     - message: Send a message to the conversation.
-    Args:
-        websocket: The WebSocket connection.
-        db: The database session.
-    Returns:
-        None
-    Raises:
-        WebSocketDisconnect: If the WebSocket connection is disconnected.
-        Exception: If an unexpected error occurs.
     """
     await websocket.accept()
     session = ChatSession()
@@ -197,14 +184,6 @@ async def ws_handler_movies(websocket: WebSocket, db: AsyncSession) -> None:
 
 
 async def _handle_interrupt(websocket: WebSocket, session: ChatSession) -> None:
-    """
-    Handles the interrupt request.
-    Args:
-        websocket: The WebSocket connection.
-        session: The chat session.
-    Returns:
-        None
-    """
     await session.cancel_generation()
     session.reset_interrupt()
     await send_response(websocket, WSResponse(type="interrupt_ack", content=None))
@@ -216,20 +195,11 @@ async def _handle_start_conversation(
     req: Any,
     session: ChatSession,
 ) -> None:
-    """
-    Handles the start conversation request.
-    Args:
-        websocket: The WebSocket connection.
-        db: The database session.
-        req: The request.
-        session: The chat session.
-    Returns:
-        None
-    """
-    await session.collect_contextualization(db)
+    await session.collect_summarization(db)
     await session.cancel_generation()
     session.reset_interrupt()
-    session.consecutive_reasks = 0  # reset consecutive reasks
+    session.consecutive_reasks = 0
+
     title = _build_conversation_title(req.message or "")
 
     try:
@@ -244,7 +214,7 @@ async def _handle_start_conversation(
             db=db,
             conversation_id=convo.id,
             role="user",
-            content=raw,  # this will be updated by the contextualization task
+            content=raw,
             raw_content=raw,
         )
     except Exception:
@@ -262,6 +232,7 @@ async def _handle_start_conversation(
 
     session.convo_id = convo.id
     session.current_msg_id = user_msg.id
+
     await send_response(
         websocket, WSResponse(type="conversation_started", content=convo.id)
     )
@@ -270,7 +241,6 @@ async def _handle_start_conversation(
         _generate_and_stream(
             websocket=websocket,
             user_message=raw,
-            user_msg_id=user_msg.id,
             convo_id=convo.id,
             db=db,
             session=session,
@@ -284,27 +254,19 @@ async def _handle_resume_conversation(
     req: Any,
     session: ChatSession,
 ) -> None:
-    """
-    Handles the resume conversation request.
-    Args:
-        websocket: The WebSocket connection.
-        db: The database session.
-        req: The request.
-        session: The chat session.
-    Returns:
-        None
-    """
     if req.convo_id == session.convo_id:
         await send_response(
-            websocket, WSResponse(type="conversation_resumed", content=session.convo_id)
+            websocket,
+            WSResponse(type="conversation_resumed", content=session.convo_id),
         )
         return
 
-    await session.collect_contextualization(db)
+    await session.collect_summarization(db)
     await session.cancel_generation()
     session.reset_interrupt()
-    session.current_msg_id = None  # discarding pending contextualization result
-    session.consecutive_reasks = 0  # reset consecutive reasks
+    session.current_msg_id = None
+    session.current_msg_id_assistant = None
+    session.consecutive_reasks = 0
 
     try:
         convo = await get_conversation(req.convo_id, db=db)
@@ -344,16 +306,6 @@ async def _handle_message(
     req: Any,
     session: ChatSession,
 ) -> None:
-    """
-    Handles the message request.
-    Args:
-        websocket: The WebSocket connection.
-        db: The database session.
-        req: The request.
-        session: The chat session.
-    Returns:
-        None
-    """
     if not session.convo_id:
         await send_response(
             websocket,
@@ -365,10 +317,10 @@ async def _handle_message(
         )
         return
 
-    # 1. Collect previous turn's contextualization result and UPDATE in Postgres
-    await session.collect_contextualization(db)
+    # 1. Flush previous turn's summarization to DB before loading history.
+    await session.collect_summarization(db)
 
-    # 2. Cancel any running generation
+    # 2. Cancel any running generation.
     await session.cancel_generation()
     session.reset_interrupt()
 
@@ -378,7 +330,7 @@ async def _handle_message(
             db=db,
             conversation_id=session.convo_id,
             role="user",
-            content=raw,  # this will be updated by the contextualization task
+            content=raw,
             raw_content=raw,
         )
     except Exception:
@@ -399,7 +351,6 @@ async def _handle_message(
         _generate_and_stream(
             websocket=websocket,
             user_message=raw,
-            user_msg_id=user_msg.id,
             convo_id=session.convo_id,
             db=db,
             session=session,
@@ -415,23 +366,10 @@ async def _handle_message(
 async def _generate_and_stream(
     websocket: WebSocket,
     user_message: str,
-    user_msg_id: int,
     convo_id: int,
     db: AsyncSession,
     session: ChatSession,
 ) -> None:
-    """
-    Handles the generation and streaming request
-    Args:
-        websocket: The WebSocket connection.
-        user_message: The user message.
-        user_msg_id: The user message ID.
-        convo_id: The conversation ID.
-        db: The database session.
-        session: The chat session.
-    Returns:
-        None
-    """
     req_id = f"movies-c{convo_id}-t{int(time.time() * 1000)}"
     start_ts = time.time()
 
@@ -451,13 +389,13 @@ async def _generate_and_stream(
             return
 
         logger.info("[%s] history → %d msgs", req_id, len(langchain_messages))
-
         await _send_event(websocket, "graph_start", None)
 
         graph_input = {
             "messages": langchain_messages,
             "reask_count": session.consecutive_reasks,
         }
+
         async for event in app_graph.astream_events(
             graph_input, config={}, version="v1"
         ):
@@ -490,12 +428,10 @@ async def _generate_and_stream(
         await _handle_generation_failure(websocket, active_node)
         return
 
-    await _finalize_generation(
+    assistant_msg_id = await _finalize_generation(
         websocket=websocket,
         db=db,
         req_id=req_id,
-        user_message=user_message,
-        user_msg_id=user_msg_id,
         convo_id=convo_id,
         assistant_chunks=assistant_chunks,
         thinking_end_sent=thinking_end_sent,
@@ -510,12 +446,17 @@ async def _generate_and_stream(
         elif final_generation_node in {"generate_retrieve", "generate_general"}:
             session.consecutive_reasks = 0
 
-    # Launch background contextualization for the NEXT turn.
-    # current_msg_id is already set in session (assigned before this task was created).
-    # collect_contextualization() will do the UPDATE when the next message arrives.
-    if not session.client_disconnected:
-        session.contextualize_task = asyncio.create_task(
-            summarize_question_background(user_message)
+    # Launch background summarization for the NEXT turn.
+    # collect_summarization() will flush the result when the next message arrives.
+    if not session.client_disconnected and not interrupted:
+        final_response = "".join(assistant_chunks).strip()
+        session.current_msg_id_assistant = assistant_msg_id
+        session.summarize_task = asyncio.create_task(
+            compress_pair(
+                user_message=user_message,
+                assistant_message=final_response,
+                token_threshold=llmsettings.message_token_threshold,
+            )
         )
 
     elapsed = time.time() - start_ts
@@ -563,11 +504,9 @@ async def _handle_chain_end_event(
     """Emits node_output with useful metadata for the client (LangGraphPanel)."""
     if lg_node not in GRAPH_NODES:
         return
-
     output = event.get("data", {}).get("output", {})
     if not isinstance(output, dict):
         return
-
     node_payload = _build_node_output_payload(lg_node, output)
     if node_payload:
         await _send_event(websocket, "node_output", json.dumps(node_payload))
@@ -583,11 +522,9 @@ async def _handle_stream_chunk(
     content = event["data"]["chunk"].content
     if not content:
         return thinking_end_sent
-
     if not thinking_end_sent:
         await _send_event(websocket, "thinking_end", None)
         thinking_end_sent = True
-
     assistant_chunks.append(content)
     await _send_event(websocket, "response_chunk", content)
     return thinking_end_sent
@@ -624,17 +561,17 @@ async def _finalize_generation(
     websocket: WebSocket,
     db: AsyncSession,
     req_id: str,
-    user_message: str,
-    user_msg_id: int,
     convo_id: int,
     assistant_chunks: list[str],
     thinking_end_sent: bool,
     active_node: str | None,
     interrupted: bool,
     skip_db: bool,
-) -> None:
+) -> int | None:
     """
     Closes streaming events and persists the assistant's response.
+
+    Returns the DB id of the persisted assistant message, or None if skipped.
     skip_db=True when the client has already disconnected.
     """
     if active_node:
@@ -649,9 +586,12 @@ async def _finalize_generation(
     if not thinking_end_sent:
         await _send_event(websocket, "thinking_end", None)
 
+    assistant_msg_id: int | None = None
     if not skip_db:
         if final_response:
-            await _persist_assistant_response(db, convo_id, final_response, req_id)
+            assistant_msg_id = await _persist_assistant_response(
+                db, convo_id, final_response, req_id
+            )
         elif not interrupted:
             logger.error("[%s] no tokens received from model", req_id)
             await send_response(
@@ -665,6 +605,7 @@ async def _finalize_generation(
 
     await _send_event(websocket, "graph_end", None)
     await _send_event(websocket, "response_done", "")
+    return assistant_msg_id
 
 
 async def _handle_generation_failure(
@@ -695,17 +636,19 @@ async def _persist_assistant_response(
     convo_id: int,
     final_response: str,
     req_id: str,
-) -> None:
+) -> int | None:
     try:
-        await add_message(
+        msg = await add_message(
             db=db,
             conversation_id=convo_id,
             role="assistant",
             content=final_response,
         )
+        return msg.id
     except Exception:
         await db.rollback()
         logger.warning("[%s] failed to save assistant message", req_id)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -722,15 +665,6 @@ async def _load_langchain_messages(
     convo_id: int,
     user_message: str,
 ) -> list | None:
-    """
-    Loads the previous messages from the database
-    Args:
-        db: The database session.
-        convo_id: The conversation ID.
-        user_message: The user message.
-    Returns:
-        The list of messages.
-    """
     recent_msgs = await get_conversation_with_messages_limited(
         conversation_id=convo_id,
         db=db,

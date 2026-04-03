@@ -10,7 +10,6 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
-from langchain_openai import ChatOpenAI
 
 from app.core.config.settings import qdrantsettings, llmsettings
 from app.prompts import (
@@ -20,8 +19,8 @@ from app.prompts import (
     GENERATE_RETRIEVE_PROMPT,
     REASK_USER_PROMPT,
     ROUTER_PROMPT,
-    SUMMARIZE_SYSTEM_PROMPT,
 )
+from app.services.llm import llm_primary, llm_secondary
 from app.services.retriever import HybridSearcher
 from qdrant_client import models
 
@@ -42,23 +41,6 @@ RETRIEVAL_SCORE_THRESHOLD = (
     0.30  # minimum acceptable best-result score — tune to your collection
 )
 
-# ---------------------------------------------------------------------------
-# LLM singletons (one per worker process — intentional, see ws_movies.py)
-# ---------------------------------------------------------------------------
-llm_primary = ChatOpenAI(
-    base_url=llmsettings.openai_base_url,
-    model="primary-llm",
-    api_key="sk-no-key-needed",
-    temperature=0.7,
-    max_retries=2,
-)
-llm_secondary = ChatOpenAI(
-    base_url=llmsettings.openai_base_url,
-    model="secondary-llm",
-    api_key="sk-no-key-needed",
-    temperature=0.0,
-    max_retries=2,
-)
 
 # HybridSearcher singleton
 searcher = HybridSearcher(
@@ -98,28 +80,6 @@ class AgentState(TypedDict):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-async def summarize_question_background(
-    raw_question: str,
-) -> str:
-    """
-    Summarize the message to save costs.
-    This is called as a fire-and-forget asyncio task after generation
-    completes; its result is stored externally by the caller (ws_movies.py)
-    and injected into the *next* turn's state as ``contextualized_question``.
-
-    Returns the summarized question, or *raw_question* on any error.
-    """
-    try:
-        prompt = ChatPromptTemplate.from_template(SUMMARIZE_SYSTEM_PROMPT)
-        chain = prompt | llm_secondary | StrOutputParser()
-        result = await chain.ainvoke({"message": raw_question})
-        logger.info("summarize_background: %r → %r", raw_question, result)
-        return result.strip() or raw_question
-    except Exception:
-        logger.exception("summarize_background failed, falling back to raw question")
-        return raw_question
 
 
 def format_history(messages: list[AnyMessage]) -> str:
@@ -261,7 +221,7 @@ async def retrieve(state: AgentState) -> dict:
     instead of attempting a generation with poor context.
     """
 
-    media_type = state.get("media_type", "any")
+    media_type = state.get("type", "any")
     qdrant_filter = _build_media_filter(media_type)
 
     logger.info(
