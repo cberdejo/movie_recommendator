@@ -11,7 +11,10 @@ class MediaItem(BaseModel):
     duration_min: int | None = Field(
         None, description="Duration in minutes, if applicable"
     )
-    type: Literal["Movie", "TV Show"] | str = Field(..., description="Type of work")
+    type: str | None = Field(
+        None, description="Original source type label, if provided by the dataset"
+    )
+
 
     class Config:
         extra = "ignore"

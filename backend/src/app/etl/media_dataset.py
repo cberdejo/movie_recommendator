@@ -80,6 +80,27 @@ def parse_duration_minutes(v) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def normalize_media_type(v) -> str | None:
+    """Map source dataset labels to canonical internal media types."""
+    if is_null(v):
+        return None
+
+    value = str(v).strip().lower()
+    aliases = {
+        "movie": "movie",
+        "film": "movie",
+        "tv show": "series",
+        "tv shows": "series",
+        "tv series": "series",
+        "series": "series",
+        "show": "series",
+    }
+    normalized = aliases.get(value)
+    if normalized is None:
+        log.warning("Unknown media type %r; leaving canonical media_type unset", v)
+    return normalized
+
+
 def load_unified(csv_movies_only: str | Path, csv_mixed: str | Path) -> list[MediaItem]:
     """
     Loads and unifies two datasets into a list of `MediaItem`.
@@ -126,7 +147,7 @@ def load_unified(csv_movies_only: str | Path, csv_mixed: str | Path) -> list[Med
                     genre=split_csv_list(r.get("genre")),
                     description=r.get("description") or None,
                     duration_min=parse_duration_minutes(r.get("duration")),
-                    type="Movie",
+                    type="movie",
                 )
             )
     # dataset 2
@@ -153,7 +174,8 @@ def load_unified(csv_movies_only: str | Path, csv_mixed: str | Path) -> list[Med
                     genre=split_csv_list(r.get("listed_in")),
                     description=r.get("description") or None,
                     duration_min=parse_duration_minutes(r.get("duration")),
-                    type=r.get("type") or None,
+                    media_type=normalize_media_type(r.get("type")) or None,
+
                 )
             )
 

@@ -46,6 +46,7 @@ const INITIAL_GRAPH_STATE: GraphState = {
   isRunning: false,
   nodes: {
     router: { id: "router", status: "idle" },
+    contextualize: { id: "contextualize", status: "idle" },
     retrieve: { id: "retrieve", status: "idle" },
     generate_retrieve: { id: "generate_retrieve", status: "idle" },
     generate_general: { id: "generate_general", status: "idle" },

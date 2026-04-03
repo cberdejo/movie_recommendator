@@ -8,7 +8,6 @@ def build_semantic_documents_from_media_item(item: MediaItem) -> Document:
     Builds a single semantic document from a MediaItem.
     """
     parts = [f"Title: {item.title or 'Unknown'}"]
-
     if item.type:
         parts.append(f"Type: {item.type}")
     if item.director:

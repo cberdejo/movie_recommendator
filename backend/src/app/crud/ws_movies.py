@@ -37,7 +37,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import ValidationError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.assistants.movie_assistant import build_app, contextualize_question_background
+from app.assistants.movie_assistant import build_app, summarize_question_background
 from app.core.config.logger import get_logger
 from app.core.config.settings import llmsettings
 from app.crud.conversation_crud import (
@@ -65,6 +65,7 @@ GRAPH_NODES = frozenset(
     {
         "router",
         "retrieve",
+        "contextualize",
         "generate_retrieve",
         "generate_general",
         "reask_user",
@@ -95,6 +96,7 @@ class ChatSession:
     current_msg_id: int | None = None
     interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
     client_disconnected: bool = False
+    consecutive_reasks: int = 0
 
     async def cancel_generation(self) -> None:
         if self.generation_task and not self.generation_task.done():
@@ -227,7 +229,7 @@ async def _handle_start_conversation(
     await session.collect_contextualization(db)
     await session.cancel_generation()
     session.reset_interrupt()
-
+    session.consecutive_reasks = 0  # reset consecutive reasks
     title = _build_conversation_title(req.message or "")
 
     try:
@@ -302,6 +304,7 @@ async def _handle_resume_conversation(
     await session.cancel_generation()
     session.reset_interrupt()
     session.current_msg_id = None  # discarding pending contextualization result
+    session.consecutive_reasks = 0  # reset consecutive reasks
 
     try:
         convo = await get_conversation(req.convo_id, db=db)
@@ -435,6 +438,7 @@ async def _generate_and_stream(
     assistant_chunks: list[str] = []
     thinking_end_sent = False
     active_node: str | None = None
+    final_generation_node: str | None = None
     interrupted = False
 
     try:
@@ -450,8 +454,10 @@ async def _generate_and_stream(
 
         await _send_event(websocket, "graph_start", None)
 
-        graph_input = {"messages": langchain_messages}
-
+        graph_input = {
+            "messages": langchain_messages,
+            "reask_count": session.consecutive_reasks,
+        }
         async for event in app_graph.astream_events(
             graph_input, config={}, version="v1"
         ):
@@ -472,6 +478,7 @@ async def _generate_and_stream(
                 "generate_general",
                 "reask_user",
             }:
+                final_generation_node = lg_node
                 thinking_end_sent = await _handle_stream_chunk(
                     websocket, event, thinking_end_sent, assistant_chunks
                 )
@@ -497,12 +504,18 @@ async def _generate_and_stream(
         skip_db=session.client_disconnected,
     )
 
+    if not interrupted:
+        if final_generation_node == "reask_user":
+            session.consecutive_reasks += 1
+        elif final_generation_node in {"generate_retrieve", "generate_general"}:
+            session.consecutive_reasks = 0
+
     # Launch background contextualization for the NEXT turn.
     # current_msg_id is already set in session (assigned before this task was created).
     # collect_contextualization() will do the UPDATE when the next message arrives.
     if not session.client_disconnected:
         session.contextualize_task = asyncio.create_task(
-            contextualize_question_background(langchain_messages, user_message)
+            summarize_question_background(user_message)
         )
 
     elapsed = time.time() - start_ts
@@ -592,6 +605,10 @@ def _build_node_output_payload(
         node_data["documents_count"] = len(output["documents"])
     if "needs_reask" in output:
         node_data["needs_reask"] = output["needs_reask"]
+    if "contextualized_question" in output:
+        node_data["rewritten_question"] = output["contextualized_question"]
+    if "rewrote" in output:
+        node_data["rewrote"] = output["rewrote"]
     return node_data if len(node_data) > 1 else None
 
 

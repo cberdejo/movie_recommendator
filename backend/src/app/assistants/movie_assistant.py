@@ -20,8 +20,10 @@ from app.prompts import (
     GENERATE_RETRIEVE_PROMPT,
     REASK_USER_PROMPT,
     ROUTER_PROMPT,
+    SUMMARIZE_SYSTEM_PROMPT,
 )
 from app.services.retriever import HybridSearcher
+from qdrant_client import models
 
 
 logging.basicConfig(
@@ -35,8 +37,9 @@ logger = logging.getLogger(__name__)
 # Retrieval quality thresholds
 # Tune these values against your Qdrant collection's score distribution.
 # ---------------------------------------------------------------------------
+MAX_REASK_COUNT = 1
 RETRIEVAL_SCORE_THRESHOLD = (
-    0.55  # minimum acceptable best-result score — tune to your collection
+    0.30  # minimum acceptable best-result score — tune to your collection
 )
 
 # ---------------------------------------------------------------------------
@@ -73,6 +76,7 @@ class AgentState(TypedDict):
     """
     State threaded through every node of the graph.
     messages: The list of messages.
+    contextualized_question: The contextualized question.
     decision: The decision of the router.
     media_type: The media type of the question.
     documents: The list of documents.
@@ -82,11 +86,13 @@ class AgentState(TypedDict):
     """
 
     messages: Annotated[list[AnyMessage], operator.add]
-    decision: str  # "RETRIEVE" | "GENERAL"
+    contextualized_question: str
+    decision: str  # "contextualize" | "generate_general"
     media_type: str  # "movie" | "series" | "any"
     documents: list[str]
     generation: str
     needs_reask: bool
+    reask_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -94,40 +100,25 @@ class AgentState(TypedDict):
 # ---------------------------------------------------------------------------
 
 
-async def contextualize_question_background(
-    messages: list[AnyMessage],
+async def summarize_question_background(
     raw_question: str,
 ) -> str:
     """
-    Produce a self-contained rewrite of *raw_question* given *messages*.
-
+    Summarize the message to save costs.
     This is called as a fire-and-forget asyncio task after generation
     completes; its result is stored externally by the caller (ws_movies.py)
-    and injected into the *next* turn's state as ``pre_contextualized_question``.
+    and injected into the *next* turn's state as ``contextualized_question``.
 
-    Returns the reformulated question, or *raw_question* on any error.
+    Returns the summarized question, or *raw_question* on any error.
     """
-    history_str = format_history(messages)
-    if "No previous history" in history_str:
-        return raw_question
-
     try:
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", CONTEXTUALIZE_SYSTEM_PROMPT),
-                ("human", CONTEXTUALIZE_USER_PROMPT),
-            ]
-        )
+        prompt = ChatPromptTemplate.from_template(SUMMARIZE_SYSTEM_PROMPT)
         chain = prompt | llm_secondary | StrOutputParser()
-        result = await chain.ainvoke(
-            {"chat_history": history_str, "question": raw_question}
-        )
-        logger.info("contextualize_background: %r → %r", raw_question, result)
+        result = await chain.ainvoke({"message": raw_question})
+        logger.info("summarize_background: %r → %r", raw_question, result)
         return result.strip() or raw_question
     except Exception:
-        logger.exception(
-            "contextualize_background failed, falling back to raw question"
-        )
+        logger.exception("summarize_background failed, falling back to raw question")
         return raw_question
 
 
@@ -181,9 +172,14 @@ def _extract_last_human_message(messages: list[AnyMessage]) -> str:
 
 
 def _retrieval_quality_ok(results: list[dict[str, Any]]) -> bool:
-    """Return True when the best Qdrant score meets the minimum threshold."""
+    """Return True when the best reranker score meets the minimum threshold."""
     if not results:
         return False
+    logger.info(
+        "retrieve: %d docs  rerank_scores=%s",
+        len(results),
+        [round(r.get("score", 0), 3) for r in results[:5]],
+    )
     return results[0].get("score", 0.0) >= RETRIEVAL_SCORE_THRESHOLD
 
 
@@ -228,20 +224,54 @@ async def router_node(state: AgentState) -> dict:
     return {"decision": decision, "media_type": media_type}
 
 
+async def contextualize_question(state: AgentState) -> dict:
+    """
+    Summarize the conversation to be a single question.
+    """
+    messages = state["messages"]
+    raw_question = _extract_last_human_message(messages)
+    try:
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", CONTEXTUALIZE_SYSTEM_PROMPT),
+                ("human", CONTEXTUALIZE_USER_PROMPT),
+            ]
+        )
+        chain = prompt | llm_secondary | StrOutputParser()
+        result = await chain.ainvoke(
+            {"chat_history": format_history(messages), "question": raw_question}
+        )
+        contextualized_question = result.strip() or raw_question
+        logger.info("contextualize_question: %r → %r", raw_question, result)
+        return {
+            "contextualized_question": contextualized_question,
+            "rewrote": contextualized_question != raw_question,
+        }
+    except Exception:
+        logger.exception("contextualize_question failed, falling back to raw question")
+        return {"contextualized_question": raw_question, "rewrote": False}
+
+
 async def retrieve(state: AgentState) -> dict:
     """
     Hybrid search with optional media-type pre-filter.
 
-    Sets ``needs_reask=True`` when the best Qdrant score falls below
+    Sets ``needs_reask=True`` when the best reranker score falls below
     RETRIEVAL_SCORE_THRESHOLD so the graph can route to ``reask_user``
     instead of attempting a generation with poor context.
     """
-    query = _extract_last_human_message(state["messages"])
+
     media_type = state.get("media_type", "any")
     qdrant_filter = _build_media_filter(media_type)
 
-    logger.info("retrieve: query=%r  media_type=%s", query, media_type)
-    results = await searcher.search(text=query, rerank=True, filter=qdrant_filter)
+    logger.info(
+        "retrieve: query=%r  media_type=%s",
+        state["contextualized_question"],
+        media_type,
+    )
+    results = await searcher.search(
+        text=state["contextualized_question"], rerank=True, filter=qdrant_filter
+    )
 
     quality_ok = _retrieval_quality_ok(results)
     best_score = results[0].get("score", 0.0) if results else 0.0
@@ -267,11 +297,15 @@ async def generate_retrieve(state: AgentState) -> dict:
     response = await chain.ainvoke(
         {
             "context": context_str,
-            "question": question,
+            "question": query,
             "chat_history": chat_history,
         }
     )
-    return {"generation": response, "messages": [AIMessage(content=response)]}
+    return {
+        "generation": response,
+        "messages": [AIMessage(content=response)],
+        "reask_count": 0,
+    }
 
 
 async def generate_general(state: AgentState) -> dict:
@@ -282,7 +316,11 @@ async def generate_general(state: AgentState) -> dict:
     prompt = ChatPromptTemplate.from_template(GENERATE_GENERAL_PROMPT)
     chain = prompt | llm_primary | StrOutputParser()
     response = await chain.ainvoke({"question": question, "chat_history": chat_history})
-    return {"generation": response, "messages": [AIMessage(content=response)]}
+    return {
+        "generation": response,
+        "messages": [AIMessage(content=response)],
+        "reask_count": 0,
+    }
 
 
 async def reask_user(state: AgentState) -> dict:
@@ -297,7 +335,7 @@ async def reask_user(state: AgentState) -> dict:
     question = _extract_last_human_message(state["messages"])
 
     prompt = ChatPromptTemplate.from_template(REASK_USER_PROMPT)
-    chain = prompt | llm_secondary | StrOutputParser()
+    chain = prompt | llm_primary | StrOutputParser()
 
     try:
         response = await chain.ainvoke({"question": question})
@@ -311,7 +349,11 @@ async def reask_user(state: AgentState) -> dict:
         )
 
     logger.info("reask_user: question=%r  reask=%r", question, response)
-    return {"generation": response, "messages": [AIMessage(content=response)]}
+    return {
+        "generation": response,
+        "messages": [AIMessage(content=response)],
+        "reask_count": state.get("reask_count", 0) + 1,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -320,12 +362,18 @@ async def reask_user(state: AgentState) -> dict:
 
 
 def route_decision(state: AgentState) -> str:
+    """Route to retrieve or generate_general based on the decision."""
     return "retrieve" if state["decision"] == "RETRIEVE" else "generate_general"
 
 
 def route_after_retrieve(state: AgentState) -> str:
-    """Route to reask_user when retrieval quality was insufficient."""
-    return "reask_user" if state.get("needs_reask") else "generate_retrieve"
+    """Route to generate_retrieve or reask_user based on the state."""
+    if not state.get("needs_reask"):
+        return "generate_retrieve"
+    # If the user has been reasked more than 2 times, route to generate_retrieve.
+    if state.get("reask_count", 0) >= MAX_REASK_COUNT:
+        return "generate_retrieve"
+    return "reask_user"
 
 
 # ---------------------------------------------------------------------------
@@ -333,11 +381,18 @@ def route_after_retrieve(state: AgentState) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_media_filter(media_type: str) -> dict | None:
+def _build_media_filter(media_type: str) -> models.Filter | None:
     """Build a Qdrant must-filter for the indexed media type payload field."""
     if media_type == "any":
         return None
-    return {"must": [{"key": "metadata.type", "match": {"value": media_type}}]}
+    return models.Filter(
+        must=[
+            models.FieldCondition(
+                key="metadata.media_type",
+                match=models.MatchValue(value=media_type),
+            )
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +408,9 @@ def build_app():
                     START
                     │
                 [router]
-                ╱        ╲
+                  ╱     ╲
+        CONTEXTUALIZE    |
+            |            |
         RETRIEVE      GENERAL
             │                ╲
         [retrieve]    [generate_general]
@@ -362,12 +419,13 @@ def build_app():
         ╱           ╲           │
         [generate_retrieve] [reask_user]
                 ╲        ╱        │
-                    END ←───────╯
+                    END ←─────────╯
 
     """
     workflow = StateGraph(AgentState)
 
     workflow.add_node("router", router_node)
+    workflow.add_node("contextualize", contextualize_question)
     workflow.add_node("retrieve", retrieve)
     workflow.add_node("generate_retrieve", generate_retrieve)
     workflow.add_node("generate_general", generate_general)
@@ -377,13 +435,15 @@ def build_app():
     workflow.add_conditional_edges(
         "router",
         route_decision,
-        {"retrieve": "retrieve", "generate_general": "generate_general"},
+        {"retrieve": "contextualize", "generate_general": "generate_general"},
     )
+    workflow.add_edge("contextualize", "retrieve")
     workflow.add_conditional_edges(
         "retrieve",
         route_after_retrieve,
         {"generate_retrieve": "generate_retrieve", "reask_user": "reask_user"},
     )
+
     workflow.add_edge("generate_retrieve", END)
     workflow.add_edge("generate_general", END)
     workflow.add_edge("reask_user", END)

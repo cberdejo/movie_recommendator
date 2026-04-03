@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import {
-  GitBranch, Search, Sparkles, MessageCircle,
-  Play, CheckCircle2, X, HelpCircle,
+  GitBranch, Search, Sparkles, MessageCircle, ScanSearch,
+  Play, CheckCircle2, X, HelpCircle, Activity
 } from "lucide-react";
 import type { GraphState, GraphNodeStatus } from "../../providers/WebSocketProvider";
 
@@ -20,53 +20,68 @@ interface NodeDef {
 const NODE_DEFS: Record<string, NodeDef> = {
   router: {
     id: "router",
-    label: "Router",
+    label: "Intent Router",
     icon: GitBranch,
-    description: "Classifies intent and media type",
+    description: "Classifies query & media type",
+  },
+  contextualize: {
+    id: "contextualize",
+    label: "Contextualize",
+    icon: ScanSearch,
+    description: "Rewrites query from chat history",
   },
   retrieve: {
     id: "retrieve",
-    label: "Retrieve",
+    label: "Vector Retrieval",
     icon: Search,
-    description: "Hybrid search in vector database",
+    description: "Hybrid DB similarity search",
   },
   generate_retrieve: {
     id: "generate_retrieve",
-    label: "Generate",
+    label: "Context Synth",
     icon: Sparkles,
-    description: "Generates response with context",
+    description: "RAG response generation",
   },
   reask_user: {
     id: "reask_user",
-    label: "Ask for details",
+    label: "Clarification",
     icon: HelpCircle,
-    description: "Retrieval quality too low",
+    description: "Fires on low confidence",
   },
   generate_general: {
     id: "generate_general",
-    label: "General Answer",
+    label: "Base LLM",
     icon: MessageCircle,
-    description: "Generates a general response",
+    description: "Zero-shot general response",
   },
 };
 
-const statusColors: Record<GraphNodeStatus, string> = {
-  idle:      "border-gray-700 bg-gray-900/50",
-  active:    "border-purple-500 bg-purple-950/40 shadow-[0_0_20px_rgba(168,85,247,0.15)]",
-  completed: "border-emerald-500/60 bg-emerald-950/20",
-  error:     "border-red-500/60 bg-red-950/20",
-};
-const dotColors: Record<GraphNodeStatus, string> = {
-  idle:      "bg-gray-600",
-  active:    "bg-purple-400",
-  completed: "bg-emerald-400",
-  error:     "bg-red-400",
-};
-const iconColors: Record<GraphNodeStatus, string> = {
-  idle:      "text-gray-500",
-  active:    "text-purple-400",
-  completed: "text-emerald-400",
-  error:     "text-red-400",
+// High-temperature visual theme: "Cyber-Glassmorphism"
+const theme = {
+  idle: {
+    card: "border-white/5 bg-white/[0.02] hover:bg-white/[0.04]",
+    icon: "text-slate-500 bg-white/5",
+    text: "text-slate-400",
+    dot: "bg-slate-700",
+  },
+  active: {
+    card: "border-cyan-500/50 bg-cyan-950/20 shadow-[0_0_30px_-5px_rgba(6,182,212,0.3)] ring-1 ring-cyan-500/20",
+    icon: "text-cyan-300 bg-cyan-500/20 shadow-[0_0_15px_rgba(6,182,212,0.5)]",
+    text: "text-cyan-100",
+    dot: "bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)]",
+  },
+  completed: {
+    card: "border-indigo-500/20 bg-indigo-950/10",
+    icon: "text-indigo-400 bg-indigo-500/10",
+    text: "text-indigo-200",
+    dot: "bg-indigo-500",
+  },
+  error: {
+    card: "border-rose-500/40 bg-rose-950/20",
+    icon: "text-rose-400 bg-rose-500/10",
+    text: "text-rose-200",
+    dot: "bg-rose-500",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -81,59 +96,96 @@ function NodeCard({ def, status, output, isInPath }: {
 }) {
   const Icon = def.icon;
   const dimmed = !isInPath && status === "idle";
+  const currentTheme = theme[status];
 
   return (
     <div className={`
-      relative rounded-lg border px-3 py-2.5 transition-all duration-500
-      ${statusColors[status]}
-      ${dimmed ? "opacity-35" : "opacity-100"}
+      relative rounded-xl border px-3.5 py-3 transition-all duration-700 backdrop-blur-md overflow-hidden
+      ${currentTheme.card}
+      ${dimmed ? "opacity-30 scale-[0.98] grayscale-[0.5]" : "opacity-100 scale-100"}
     `}>
-      <div className="flex items-center gap-2.5">
-        <div className={`relative flex-shrink-0 ${iconColors[status]}`}>
+      {/* Active scanning beam effect */}
+      {status === "active" && (
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-400/5 to-transparent h-[200%] animate-[scan_2s_linear_infinite]" />
+      )}
+
+      <div className="relative flex items-start gap-3">
+        <div className={`relative flex-shrink-0 p-2 rounded-lg transition-colors duration-500 ${currentTheme.icon}`}>
           <Icon className="w-4 h-4" />
           {status === "active" && (
-            <span className="absolute -inset-1 rounded-full bg-purple-500/20 animate-ping" />
+            <span className="absolute inset-0 rounded-lg ring-1 ring-cyan-400/50 animate-ping opacity-50" />
           )}
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-200 truncate">{def.label}</span>
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors duration-500
-              ${dotColors[status]} ${status === "active" ? "animate-pulse" : ""}`}
+        
+        <div className="flex-1 min-w-0 pt-0.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className={`text-[13px] font-semibold tracking-wide truncate ${currentTheme.text}`}>
+              {def.label}
+            </span>
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 transition-all duration-500
+              ${currentTheme.dot} ${status === "active" ? "animate-pulse" : ""}`}
             />
           </div>
-          <p className="text-[11px] text-gray-500 leading-tight mt-0.5">{def.description}</p>
+          <p className="text-[10px] text-slate-500 leading-tight mt-1 font-medium tracking-wide uppercase">
+            {def.description}
+          </p>
         </div>
       </div>
 
       {output && Object.keys(output).length > 0 && (
-        <div className="mt-2 pt-2 border-t border-gray-800/60 space-y-1">
+        <div className="relative mt-3 pt-3 border-t border-white/5 grid grid-cols-2 gap-2">
           {output.decision && (
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Decision</span>
-              <span className={`ml-2 text-xs font-mono font-semibold
-                ${output.decision === "RETRIEVE" ? "text-blue-400" : "text-amber-400"}`}>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">Route</span>
+              <span className={`text-[11px] font-mono font-bold rounded px-1.5 py-0.5 w-max
+                ${output.decision === "RETRIEVE" ? "bg-indigo-500/10 text-indigo-300 border border-indigo-500/20" : 
+                  "bg-amber-500/10 text-amber-300 border border-amber-500/20"}`}>
                 {output.decision}
               </span>
             </div>
           )}
           {output.media_type && output.media_type !== "any" && (
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Media</span>
-              <span className="ml-2 text-xs font-mono text-purple-300">{output.media_type}</span>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">Media</span>
+              <span className="text-[11px] font-mono text-fuchsia-300 bg-fuchsia-500/10 border border-fuchsia-500/20 rounded px-1.5 py-0.5 w-max">
+                {output.media_type}
+              </span>
+            </div>
+          )}
+          {output.rewritten_question && (
+            <div className="flex flex-col gap-0.5 col-span-2">
+              <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">Rewrite</span>
+              <span className="text-[11px] text-emerald-200 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-1 leading-snug break-words">
+                {output.rewritten_question}
+              </span>
+            </div>
+          )}
+          {output.rewrote === false && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">Status</span>
+              <span className="text-[11px] font-mono text-slate-300 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 w-max">
+                unchanged
+              </span>
             </div>
           )}
           {output.documents_count !== undefined && (
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Docs</span>
-              <span className="ml-2 text-xs font-mono text-blue-300">{output.documents_count} found</span>
+            <div className="flex flex-col gap-0.5 col-span-2">
+              <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">Vectors</span>
+              <div className="flex items-center gap-1.5 text-[11px] font-mono text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 rounded px-1.5 py-0.5 w-max">
+                <Activity className="w-3 h-3" />
+                {output.documents_count} hits found
+              </div>
             </div>
           )}
           {output.needs_reask && (
-            <div>
-              <span className="text-[10px] uppercase tracking-wider text-amber-500/70 font-medium">
-                Low quality — asking for details
-              </span>
+            <div className="col-span-2 mt-1">
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-rose-500/10 border border-rose-500/20 text-rose-300 text-[10px] uppercase font-bold tracking-wider">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-rose-500"></span>
+                </span>
+                Sub-optimal Match: Re-asking
+              </div>
             </div>
           )}
         </div>
@@ -143,137 +195,90 @@ function NodeCard({ def, status, output, isInPath }: {
 }
 
 // ---------------------------------------------------------------------------
-// Edge helpers
+// Advanced SVG Edge Helpers with Glow Filters
 // ---------------------------------------------------------------------------
+
+const getEdgeStyle = (active: boolean, completed: boolean) => {
+  if (active) return "stroke-cyan-400 drop-shadow-[0_0_5px_rgba(6,182,212,0.8)]";
+  if (completed) return "stroke-indigo-500/50";
+  return "stroke-white/10";
+};
 
 function EdgeLine({ active, completed }: { active: boolean; completed: boolean }) {
   return (
-    <div className="flex justify-center -my-px">
-      <div className="relative w-px h-5">
-        <div className={`absolute inset-0 w-px transition-colors duration-500
-          ${completed ? "bg-emerald-500/40" : active ? "bg-purple-500/60" : "bg-gray-700/50"}`}
+    <div className="flex justify-center -my-px relative z-0">
+      <div className="relative w-0.5 h-6">
+        <div className={`absolute inset-0 transition-all duration-700
+          ${completed ? "bg-indigo-500/40" : active ? "bg-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.8)]" : "bg-white/10"}`}
         />
-        {active && <div className="absolute inset-0 w-px bg-purple-400/80 animate-pulse" />}
+        {active && <div className="absolute inset-0 bg-cyan-300 blur-[2px] animate-pulse" />}
       </div>
     </div>
   );
 }
 
-/**
- * Router split: 2 branches
- *   left  → retrieve path   (RETRIEVE)
- *   right → generate_general (GENERAL)
- */
-function RouterSplit({ decision, pathSet }: {
-  decision: string | null;
-  pathSet: Set<string>;
-}) {
-  const leftActive  = pathSet.has("retrieve") || pathSet.has("generate_retrieve") || pathSet.has("reask_user");
+function RouterSplit({ decision, pathSet }: { decision: string | null; pathSet: Set<string>; }) {
+  const leftActive  = pathSet.has("contextualize") || pathSet.has("retrieve") || pathSet.has("generate_retrieve") || pathSet.has("reask_user");
   const rightActive = pathSet.has("generate_general");
 
-  const color = (on: boolean) => on ? "stroke-emerald-500/40" : "stroke-gray-700/50";
-
   return (
-    <div className="relative -my-px">
-      <svg viewBox="0 0 200 30" className="w-full h-6 block" preserveAspectRatio="none">
-        {/* center-top → left-bottom */}
-        <path d="M 100 0 Q 100 15, 45 30"  fill="none"
-          className={`${color(leftActive)} transition-all duration-500`}
-          strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-        {/* center-top → right-bottom */}
-        <path d="M 100 0 Q 100 15, 155 30" fill="none"
-          className={`${color(rightActive)} transition-all duration-500`}
-          strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    <div className="relative -my-px z-0">
+      <svg viewBox="0 0 200 36" className="w-full h-8 block" preserveAspectRatio="none">
+        <path d="M 100 0 Q 100 18, 45 36" fill="none"
+          className={`${getEdgeStyle(decision === "RETRIEVE" && !leftActive, leftActive)} transition-all duration-700`}
+          strokeWidth={leftActive ? "2" : "1.5"} vectorEffect="non-scaling-stroke" />
+        <path d="M 100 0 Q 100 18, 155 36" fill="none"
+          className={`${getEdgeStyle(decision === "GENERAL" && !rightActive, rightActive)} transition-all duration-700`}
+          strokeWidth={rightActive ? "2" : "1.5"} vectorEffect="non-scaling-stroke" />
       </svg>
-      {decision && (
-        <>
-          <span className="absolute left-1 bottom-0 text-[9px] font-mono text-blue-400/70">RETRIEVE</span>
-          <span className="absolute right-1 bottom-0 text-[9px] font-mono text-amber-400/70">GENERAL</span>
-        </>
-      )}
     </div>
   );
 }
 
-/**
- * Retrieve sub-split: 2 branches
- *   left  → generate_retrieve  (quality ok)
- *   right → reask_user         (quality poor)
- */
 function RetrieveSplit({ pathSet }: { pathSet: Set<string> }) {
   const leftActive  = pathSet.has("generate_retrieve");
   const rightActive = pathSet.has("reask_user");
 
-  const color = (on: boolean) => on ? "stroke-emerald-500/40" : "stroke-gray-700/50";
-
   return (
-    <div className="relative -my-px">
-      <svg viewBox="0 0 160 28" className="w-full h-5 block" preserveAspectRatio="none">
-        <path d="M 80 0 Q 80 14, 35 28"  fill="none"
-          className={`${color(leftActive)} transition-all duration-500`}
-          strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-        <path d="M 80 0 Q 80 14, 125 28" fill="none"
-          className={`${color(rightActive)} transition-all duration-500`}
-          strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    <div className="relative -my-px z-0">
+      <svg viewBox="0 0 160 30" className="w-full h-7 block" preserveAspectRatio="none">
+        <path d="M 80 0 Q 80 15, 35 30" fill="none"
+          className={`${getEdgeStyle(false, leftActive)} transition-all duration-700`}
+          strokeWidth={leftActive ? "2" : "1.5"} vectorEffect="non-scaling-stroke" />
+        <path d="M 80 0 Q 80 15, 125 30" fill="none"
+          className={`${getEdgeStyle(false, rightActive)} transition-all duration-700`}
+          strokeWidth={rightActive ? "2" : "1.5"} vectorEffect="non-scaling-stroke" />
       </svg>
-      <span className="absolute left-1 bottom-0 text-[9px] font-mono text-emerald-400/60">OK</span>
-      <span className="absolute right-1 bottom-0 text-[9px] font-mono text-amber-400/60">POOR</span>
     </div>
   );
 }
 
-/**
- * Final merge: all terminal nodes converge to END
- *   far-left  → generate_retrieve
- *   mid-left  → reask_user
- *   right     → generate_general
- */
 function FinalMerge({ pathSet }: { pathSet: Set<string> }) {
   const a = pathSet.has("generate_retrieve");
   const b = pathSet.has("reask_user");
   const c = pathSet.has("generate_general");
 
-  const color = (on: boolean) => on ? "stroke-emerald-500/40" : "stroke-gray-700/50";
-
   return (
-    <div className="-my-px">
-      <svg viewBox="0 0 200 30" className="w-full h-6 block" preserveAspectRatio="none">
-        <path d="M 35  0 Q 35  15, 100 30" fill="none"
-          className={`${color(a)} transition-all duration-500`}
-          strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-        <path d="M 80  0 Q 80  15, 100 30" fill="none"
-          className={`${color(b)} transition-all duration-500`}
-          strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-        <path d="M 155 0 Q 155 15, 100 30" fill="none"
-          className={`${color(c)} transition-all duration-500`}
-          strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    <div className="-my-px z-0 relative">
+      <svg viewBox="0 0 200 36" className="w-full h-8 block" preserveAspectRatio="none">
+        <path d="M 35  0 Q 35  18, 100 36" fill="none"
+          className={`${getEdgeStyle(false, a)} transition-all duration-700`}
+          strokeWidth={a ? "2" : "1.5"} vectorEffect="non-scaling-stroke" />
+        <path d="M 80  0 Q 80  18, 100 36" fill="none"
+          className={`${getEdgeStyle(false, b)} transition-all duration-700`}
+          strokeWidth={b ? "2" : "1.5"} vectorEffect="non-scaling-stroke" />
+        <path d="M 155 0 Q 155 18, 100 36" fill="none"
+          className={`${getEdgeStyle(false, c)} transition-all duration-700`}
+          strokeWidth={c ? "2" : "1.5"} vectorEffect="non-scaling-stroke" />
       </svg>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Panel
+// Main Panel
 // ---------------------------------------------------------------------------
 
-/*
- * Actual graph topology rendered:
- *
- *              START
- *                │
- *             [router]
- *            ╱        ╲
- *       RETRIEVE      GENERAL
- *          │                  ╲
- *       [retrieve]        [generate_general]
- *        ╱     ╲                    │
- *       OK     POOR                 │
- *      ╱           ╲               │
- * [generate_retrieve] [reask_user]  │
- *        ╲           ╱             │
- *          ╲       ╱               │
- *              END ←───────────────╯
- */
 const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
   const { nodes, executionPath, isRunning } = graphState;
   const pathSet  = useMemo(() => new Set(executionPath), [executionPath]);
@@ -282,51 +287,60 @@ const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
   const nodeStatus = (id: string): GraphNodeStatus => nodes[id]?.status ?? "idle";
   const nodeOutput = (id: string) => nodes[id]?.output;
 
-  const isRetrievePath   = pathSet.has("retrieve") || pathSet.has("generate_retrieve") || pathSet.has("reask_user");
+  const isRetrievePath   = pathSet.has("contextualize") || pathSet.has("retrieve") || pathSet.has("generate_retrieve") || pathSet.has("reask_user");
   const isGeneralPath    = pathSet.has("generate_general");
   const anyTerminalDone  = pathSet.has("generate_retrieve") || pathSet.has("reask_user") || pathSet.has("generate_general");
 
   return (
-    <div className="h-full flex flex-col bg-gray-950 border-l border-gray-800">
+    <div className="h-full flex flex-col bg-[#030305] text-white border-l border-white/10 relative overflow-hidden font-sans">
+      
+      {/* Cinematic Background FX */}
+      <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-cyan-500/10 rounded-full blur-[120px] -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
+      <div className="absolute bottom-0 right-0 w-[600px] h-[600px] bg-indigo-600/10 rounded-full blur-[150px] translate-x-1/3 translate-y-1/3 pointer-events-none" />
+      <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMSIgY3k9IjEiIHI9IjEiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wMykiLz48L3N2Zz4=')] [mask-image:linear-gradient(to_bottom,white,transparent)] pointer-events-none" />
 
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full transition-colors duration-300
-            ${isRunning ? "bg-purple-400 animate-pulse" : "bg-gray-600"}`}
-          />
-          <h3 className="text-sm font-semibold text-gray-200">LangGraph Flow</h3>
+      <div className="relative z-10 flex items-center justify-between px-5 py-4 border-b border-white/5 backdrop-blur-xl bg-black/20">
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <div className={`w-2.5 h-2.5 rounded-full transition-colors duration-500 relative z-10
+              ${isRunning ? "bg-cyan-400" : "bg-slate-600"}`} />
+            {isRunning && (
+              <div className="absolute inset-0 bg-cyan-400 rounded-full blur-sm animate-pulse" />
+            )}
+          </div>
+          <div>
+            <h3 className="text-sm font-bold tracking-wide text-white drop-shadow-md">Nexus Graph</h3>
+            <p className="text-[10px] uppercase tracking-widest text-cyan-400/70 font-semibold mt-0.5">Live Execution State</p>
+          </div>
         </div>
         <button
           onClick={onClose}
-          className="p-1 rounded hover:bg-gray-800 text-gray-400 hover:text-gray-200 transition-colors"
-          aria-label="Close"
+          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-all backdrop-blur-md border border-white/5"
         >
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-4">
-        <div className="max-w-[300px] mx-auto">
+      <div className="flex-1 overflow-y-auto px-4 py-8 relative z-10 custom-scrollbar">
+        <div className="max-w-[340px] mx-auto">
 
           {/* START */}
-          <div className="flex justify-center mb-0">
-            <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-all duration-500
+          <div className="flex justify-center mb-0 relative z-10">
+            <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[11px] font-bold tracking-widest uppercase border transition-all duration-700 backdrop-blur-md
               ${isRunning || executionPath.length > 0
-                ? "border-emerald-500/50 text-emerald-400 bg-emerald-950/20"
-                : "border-gray-700 text-gray-500 bg-gray-900/50"}`}>
-              <Play className="w-3 h-3" />
-              Start
+                ? "border-cyan-500/50 text-cyan-300 bg-cyan-950/30 shadow-[0_0_15px_rgba(6,182,212,0.2)]"
+                : "border-white/10 text-slate-400 bg-white/5"}`}>
+              <Play className="w-3.5 h-3.5" />
+              Init
             </div>
           </div>
 
-          {/* START → router */}
           <EdgeLine
             active={nodeStatus("router") === "active"}
             completed={pathSet.has("router")}
           />
 
-          {/* Router */}
           <NodeCard
             def={NODE_DEFS.router}
             status={nodeStatus("router")}
@@ -334,27 +348,31 @@ const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
             isInPath={pathSet.has("router") || isRunning}
           />
 
-          {/* Router split: RETRIEVE (left) vs GENERAL (right) */}
           <RouterSplit decision={decision} pathSet={pathSet} />
 
           {/* Two top-level columns */}
-          <div className="grid grid-cols-2 gap-2">
-
-            {/* ── Left column: retrieve path ── */}
-            <div>
-              {/* retrieve node */}
+          <div className="grid grid-cols-[1fr_0.9fr] gap-3 relative z-10">
+            {/* Left: retrieve path */}
+            <div className="flex flex-col">
+              <NodeCard
+                def={NODE_DEFS.contextualize}
+                status={nodeStatus("contextualize")}
+                output={nodeOutput("contextualize")}
+                isInPath={isRetrievePath}
+              />
+              <EdgeLine
+                active={nodeStatus("retrieve") === "active"}
+                completed={pathSet.has("retrieve")}
+              />
               <NodeCard
                 def={NODE_DEFS.retrieve}
                 status={nodeStatus("retrieve")}
                 output={nodeOutput("retrieve")}
                 isInPath={isRetrievePath}
               />
-
-              {/* retrieve sub-split: generate_retrieve (left) vs reask_user (right) */}
               <RetrieveSplit pathSet={pathSet} />
-
-              {/* Two sub-columns inside the left column */}
-              <div className="grid grid-cols-2 gap-1">
+              
+              <div className="grid grid-cols-2 gap-2">
                 <NodeCard
                   def={NODE_DEFS.generate_retrieve}
                   status={nodeStatus("generate_retrieve")}
@@ -370,7 +388,7 @@ const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
               </div>
             </div>
 
-            {/* ── Right column: general path ── */}
+            {/* Right: general path */}
             <div className="flex flex-col">
               <NodeCard
                 def={NODE_DEFS.generate_general}
@@ -378,46 +396,65 @@ const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
                 output={nodeOutput("generate_general")}
                 isInPath={isGeneralPath}
               />
-              {/* Spacer so right column aligns with the sub-row on the left */}
-              <div className="flex-1" />
             </div>
           </div>
 
-          {/* All terminal nodes → END */}
           <FinalMerge pathSet={pathSet} />
 
           {/* END */}
-          <div className="flex justify-center mt-0">
-            <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-all duration-500
+          <div className="flex justify-center mt-0 relative z-10">
+            <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[11px] font-bold tracking-widest uppercase border transition-all duration-700 backdrop-blur-md
               ${anyTerminalDone
-                ? "border-emerald-500/50 text-emerald-400 bg-emerald-950/20"
-                : "border-gray-700 text-gray-500 bg-gray-900/50"}`}>
-              <CheckCircle2 className="w-3 h-3" />
-              End
+                ? "border-indigo-500/50 text-indigo-300 bg-indigo-950/30 shadow-[0_0_15px_rgba(99,102,241,0.2)]"
+                : "border-white/10 text-slate-500 bg-white/5"}`}>
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Terminate
             </div>
           </div>
 
-          {/* Execution log */}
+          {/* Holographic Execution Log */}
           {executionPath.length > 0 && (
-            <div className="mt-6 pt-4 border-t border-gray-800/60">
-              <h4 className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-2">
-                Execution Path
-              </h4>
-              <div className="flex flex-wrap gap-1">
+            <div className="mt-10 p-4 rounded-xl border border-white/5 bg-white/[0.02] backdrop-blur-md">
+              <div className="flex items-center gap-2 mb-3">
+                <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                <h4 className="text-[10px] uppercase tracking-[0.2em] text-cyan-400 font-bold">
+                  Trace Log
+                </h4>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
                 {executionPath.map((node, i) => (
-                  <span
-                    key={`${node}-${i}`}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono bg-gray-800/60 text-gray-400"
-                  >
-                    <span className="text-gray-600">{i + 1}.</span>
-                    {node}
-                  </span>
+                  <div key={`${node}-${i}`} className="flex items-center gap-1.5">
+                    <span className="inline-flex items-center px-2 py-1 rounded-md text-[10px] font-mono bg-black/40 border border-white/5 text-slate-300 shadow-inner">
+                      <span className="text-cyan-500/50 mr-1.5">{i + 1}</span>
+                      {node}
+                    </span>
+                    {i < executionPath.length - 1 && (
+                      <span className="text-white/20 text-[10px]">→</span>
+                    )}
+                  </div>
                 ))}
+                {isRunning && (
+                  <span className="inline-flex items-center px-2 py-1 rounded-md text-[10px] font-mono border border-cyan-500/30 text-cyan-400 bg-cyan-500/10 animate-pulse">
+                    processing...
+                  </span>
+                )}
               </div>
             </div>
           )}
         </div>
       </div>
+      
+      {/* Inline styles for custom animations that are tricky in raw Tailwind without config */}
+      <style dangerouslySetInnerHTML={{__html: `
+        @keyframes scan {
+          0% { transform: translateY(-100%); }
+          100% { transform: translateY(100%); }
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(6,182,212,0.5); }
+      `}} />
     </div>
   );
 };
