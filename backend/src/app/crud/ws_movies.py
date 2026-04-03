@@ -600,7 +600,10 @@ def _build_node_output_payload(
     if "decision" in output:
         node_data["decision"] = output["decision"]
     if "media_type" in output:
-        node_data["media_type"] = output["media_type"]
+        mt = str(output["media_type"]).strip().lower()
+        if mt not in ("movie", "series", "any"):
+            mt = "any"
+        node_data["media_type"] = mt
     if "documents" in output:
         node_data["documents_count"] = len(output["documents"])
     if "needs_reask" in output:
