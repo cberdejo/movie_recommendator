@@ -221,7 +221,7 @@ async def retrieve(state: AgentState) -> dict:
     instead of attempting a generation with poor context.
     """
 
-    media_type = state.get("type", "any")
+    media_type = state.get("media_type", "any")
     qdrant_filter = _build_media_filter(media_type)
 
     logger.info(

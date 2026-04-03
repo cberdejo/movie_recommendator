@@ -87,13 +87,8 @@ def normalize_media_type(v) -> str | None:
 
     value = str(v).strip().lower()
     aliases = {
-        "movie": "movie",
-        "film": "movie",
-        "tv show": "series",
-        "tv shows": "series",
-        "tv series": "series",
-        "series": "series",
-        "show": "series",
+        "Movie": "movie",
+        "TV Show": "series",
     }
     normalized = aliases.get(value)
     if normalized is None:
@@ -147,7 +142,7 @@ def load_unified(csv_movies_only: str | Path, csv_mixed: str | Path) -> list[Med
                     genre=split_csv_list(r.get("genre")),
                     description=r.get("description") or None,
                     duration_min=parse_duration_minutes(r.get("duration")),
-                    type="movie",
+                    media_type="movie",
                 )
             )
     # dataset 2
