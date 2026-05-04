@@ -41,17 +41,18 @@ The frontend is a chat interface that connects to the backend via WebSocket, all
 movie_recommendator/
 ├── backend/                    # API FastAPI + LangGraph + Qdrant
 │   ├── src/app/
-│   │   ├── api/v1/endpoints/   # REST and WebSocket routes (thin layer)
-│   │   ├── assistants/         # LangGraph state machine (movie_assistant)
-│   │   ├── core/config/        # Settings and logging
-│   │   ├── crud/               # DB access layer (conversation_crud)
-│   │   ├── db/                 # Session factory and schema init
-│   │   ├── entities/           # SQLModel ORM models (Conversation, Message)
-│   │   ├── etl/                # Qdrant population from Kaggle datasets
-│   │   ├── prompts/            # LLM prompt templates per graph node
-│   │   ├── schemas/            # Pydantic request/response schemas
-│   │   ├── services/           # Retriever, LLM client, history compressor
-│   │   └── websocket/          # WebSocket layer (handler, generation, session, protocol)
+│   │   ├── api/v1/endpoints/   # REST + WS endpoints (health, conversations, ws_movies)
+│   │   ├── assistants/         # LangGraph assistant state machine (movie_assistant)
+│   │   ├── core/               # Settings, logger, middleware, Redis and observability wiring
+│   │   ├── crud/               # Conversation/message DB access layer
+│   │   ├── db/                 # SQLModel session factory and DB init
+│   │   ├── entities/           # SQLModel ORM models (Conversation, Message, MediaItem)
+│   │   ├── etl/                # Dataset parsing/chunking and Qdrant population
+│   │   ├── prompts/            # Prompt templates used by graph nodes
+│   │   ├── schemas/            # Pydantic schemas (HTTP + WebSocket payloads)
+│   │   ├── services/           # Retriever, LLM client, stream bus, history compressor
+│   │   ├── utils/              # Shared helpers (type parsing, etc.)
+│   │   └── websocket/          # WS orchestration (handler, generation, relay, protocol, session)
 │   ├── litellm_config.yaml     # LiteLLM model configuration (see LiteLLM)
 │   ├── pyproject.toml
 │   └── Dockerfile
@@ -125,6 +126,19 @@ Real-time communication between the frontend and backend is done via **WebSocket
 | `error` | Error message (e.g. no active conversation, generation failure). |
 
 Benefits: low perceived latency, a single persistent connection, and native support for streaming text and live graph updates.
+
+
+### Redis <a id="redis-features"></a>
+
+Redis is used as the **real-time coordination layer** for WebSocket generation:
+
+- **Event stream bus**: every generation writes events (`response_chunk`, `node_start`, `response_done`, `error`, etc.) to a Redis Stream keyed by `message_id`. The WS relay reads the stream and forwards events to the connected client.
+- **Resume support**: when a client reconnects or resumes a conversation, the backend can continue reading from a stream id (`from_id`) and replay in-flight events, instead of losing progress.
+- **Generation lock per conversation**: Redis stores the active generation for each conversation (`active:generation:{conversation_id}`) to prevent starting multiple overlapping turns for the same chat.
+- **Interrupt signaling**: when the user clicks stop, the backend sets an interrupt flag in Redis (`interrupt:{message_id}`); the generation loop polls it and stops gracefully.
+- **TTL-based cleanup**: stream and control keys use expirations (`STREAM_TTL`, `ACTIVE_GENERATION_TTL`, `INTERRUPT_TTL`) so transient runtime state is cleaned automatically.
+
+In Docker, Redis is exposed as the `redis` service (`redis://redis:6379/0`) and injected into backend config through `REDIS_URL`.
 
 
 ### HybridSearcher <a id="hybridsearcher"></a>
