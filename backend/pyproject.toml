@@ -24,6 +24,9 @@ dependencies = [
     "numpy>=2.3.3",
     "tqdm>=4.67.1",
     "sentence-transformers>=5.1.0",
+    "redis>=5.0",
+    "structlog>=25.5.0",
+    "langfuse>=3.0.0",
 ]
 
 
