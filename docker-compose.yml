@@ -1,68 +1,7 @@
 services:
-  frontend:
-    build:
-      context: ./
-      dockerfile: frontend/Dockerfile
-      args:
-        VITE_API_BASE: ${VITE_API_BASE:-}
-        VITE_WS_URL: ${VITE_WS_URL:-}
-    container_name: frontend
-    ports:
-      - "5173:80"
-    depends_on:
-      - backend
-
-  qdrant:
-    image: qdrant/qdrant
-    ports:
-      - "6333:6333"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    env_file:
-      - ./.env
-
-  backend:
-    build:
-      context: ./
-      dockerfile: backend/Dockerfile
-    container_name: backend
-    ports:
-      - "8000:8000"
-    environment:
-      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
-      QDRANT_PORT: ${QDRANT_PORT:-6333}
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-movies_collection}
-      DATABASE_URI: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-chatdb}
-    depends_on:
-      qdrant:
-        condition: service_started
-      postgres:
-        condition: service_healthy
-    working_dir: /app
-    command: ["python",  "-m", "app.main"]
-    env_file:
-      - ./.env
-
-  qdrant-init:
-    build:
-      context: ./
-      dockerfile: backend/Dockerfile
-    container_name: qdrant-init
-    environment:
-      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
-      QDRANT_PORT: ${QDRANT_PORT:-6333}
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-movies_collection}
-    depends_on:
-      - qdrant
-    working_dir: /app
-    command: ["python", "-m", "app.etl.populate_qdrant_movies"]
-    profiles:
-      - init
-    env_file:
-      - ./.env
-  
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15
     container_name: postgres-db
@@ -83,15 +22,28 @@ services:
       retries: 20
       start_period: 10s
 
-  litellm:
-    image: ghcr.io/berriai/litellm:main-latest
-    container_name: litellm
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "4000:4000"
+      - "6379:6379"
     volumes:
-      - ./backend/litellm_config.yaml:/app/config.yaml 
-    command: [ "--config", "/app/config.yaml", "--detailed_debug" ]
-    restart: unless-stopped
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    env_file:
+      - ./.env
 
   ollama:
     image: ollama/ollama:latest
@@ -101,7 +53,99 @@ services:
     ports:
       - "11434:11434"
 
+  # ---------------------------------------------------------------------------
+  # Proxies / models
+  # ---------------------------------------------------------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./backend/litellm_config.yaml:/app/config.yaml
+    command: ["--config", "/app/config.yaml", "--detailed_debug"]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./
+      dockerfile: backend/Dockerfile
+    container_name: backend
+    ports:
+      - "8000:8000"
+    environment:
+      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
+      QDRANT_PORT: ${QDRANT_PORT:-6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-movies_collection}
+      DATABASE_URI: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-chatdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      STREAM_KEY_PREFIX: ${STREAM_KEY_PREFIX:-stream:chat:}
+      STREAM_TTL: ${STREAM_TTL:-3600}
+      ACTIVE_GENERATION_TTL: ${ACTIVE_GENERATION_TTL:-3600}
+      INTERRUPT_TTL: ${INTERRUPT_TTL:-3600}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_SAMPLE_RATE: ${LANGFUSE_SAMPLE_RATE:-1.0}
+    depends_on:
+      qdrant:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    working_dir: /app
+    command: ["python", "-m", "app.main"]
+    env_file:
+      - ./.env
+
+  # ---------------------------------------------------------------------------
+  # Init jobs
+  # ---------------------------------------------------------------------------
+  qdrant-init:
+    build:
+      context: ./
+      dockerfile: backend/Dockerfile
+    container_name: qdrant-init
+    environment:
+      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
+      QDRANT_PORT: ${QDRANT_PORT:-6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-movies_collection}
+    depends_on:
+      - qdrant
+    working_dir: /app
+    command: ["python", "-m", "app.etl.populate_qdrant_movies"]
+    profiles:
+      - init
+    env_file:
+      - ./.env
+
+  # ---------------------------------------------------------------------------
+  # Frontend
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-}
+        VITE_WS_URL: ${VITE_WS_URL:-}
+    container_name: frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
 volumes:
   qdrant_data:
   postgres_data:
   ollama_storage:
+  redis_data:
