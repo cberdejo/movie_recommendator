@@ -1,11 +1,10 @@
-# LiteLLM configuration file 
 model_list:
   - model_name: primary-llm
     litellm_params:
-      model: ollama/qwen2.5:7b-instruct
+      model: ollama/gemma4:26b
       api_base: http://ollama:11434
 
   - model_name: secondary-llm
     litellm_params:
-      model: ollama/qwen2.5:1.5b-instruct
+      model: ollama/gemma4:e4b
       api_base: http://ollama:11434
