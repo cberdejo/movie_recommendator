@@ -1,9 +1,8 @@
-import asyncio
-
 from app.db.session import async_engine
 from sqlmodel import SQLModel
 
-from app.entities import Conversation, Message
+# Import models so SQLModel metadata is populated before create_all().
+from app.entities import Conversation, Message  # noqa: F401
 
 
 async def init_db() -> None:

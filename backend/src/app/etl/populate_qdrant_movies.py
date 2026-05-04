@@ -25,7 +25,6 @@ from langchain_core.documents import Document
 from app.core.config.logger import get_logger
 from app.core.config.settings import qdrantsettings
 from app.etl.media_dataset import load_unified
-from app.entities.media_item_model import MediaItem
 from app.services.retriever import HybridSearcher
 from app.etl.semantic_chunking import build_semantic_documents_from_media_item
 

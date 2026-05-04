@@ -5,12 +5,10 @@ Compresses a user/assistant message pair when either exceeds a token threshold.
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.core.config.logger import get_logger
-from app.core.config.settings import llmsettings
+from app.core.logger import log
+from app.core.settings import llmsettings
 from app.prompts import SUMMARIZE_SYSTEM_PROMPT
 from app.services.llm import llm_secondary
-
-logger = get_logger("HISTORY_COMPRESSOR")
 
 
 def _count_tokens(text: str) -> int:
@@ -24,14 +22,14 @@ async def _summarize(text: str) -> str:
         prompt = ChatPromptTemplate.from_template(SUMMARIZE_SYSTEM_PROMPT)
         chain = prompt | llm_secondary | StrOutputParser()
         result = await chain.ainvoke({"message": text})
-        logger.info(
+        log.info(
             "summarized: %d → %d tokens",
             _count_tokens(text),
             _count_tokens(result),
         )
         return result.strip() or text
     except Exception:
-        logger.exception("summarize failed, keeping original")
+        log.exception("summarize failed, keeping original")
         return text
 
 

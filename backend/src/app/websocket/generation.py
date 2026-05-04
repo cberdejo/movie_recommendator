@@ -1,5 +1,10 @@
 """
-WebSocket generation pipeline: streaming, event helpers, finalization, DB helpers.
+LangGraph generation pipeline that publishes events to Redis Streams.
+
+The generation task owns its own AsyncSession (so it survives WebSocket
+disconnects) and writes every event to a Redis stream keyed by message_id.
+A separate relay (websocket/relay.py) forwards those events to the live
+WebSocket connection.
 """
 
 import asyncio
@@ -7,18 +12,24 @@ import json
 import time
 from typing import Any
 
-from fastapi import WebSocket
+import redis.asyncio as aioredis
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.core.config.logger import get_logger
-from app.core.config.settings import llmsettings
-from app.crud.conversation_crud import add_message, get_conversation_with_messages_limited
+from app.core.logger import log
+from app.core.settings import llmsettings
+from app.crud.conversation_crud import (
+    add_message,
+    get_conversation_with_messages_limited,
+)
+from app.db.session import AsyncSessionLocal
 from app.services.history_compressor import compress_pair
-from app.websocket.protocol import (
-    build_error_response,
-    send_if_open as _send_if_open,
-    send_response,
+from app.services.stream_bus import (
+    clear_active_generation,
+    clear_interrupt,
+    is_interrupted,
+    mark_active_generation,
+    publish_event,
 )
 from app.websocket.session import (
     GRAPH_NODES,
@@ -27,41 +38,55 @@ from app.websocket.session import (
     app_graph,
 )
 
-logger = get_logger("WS_MOVIES_GENERATION")
-
-
 # ---------------------------------------------------------------------------
-# Entry point for generation
+# Public entry point
 # ---------------------------------------------------------------------------
 
 
-async def generate_and_stream(
-    websocket: WebSocket,
+async def generate_to_redis(
+    redis: aioredis.Redis,
     user_message: str,
     convo_id: int,
-    db: AsyncSession,
+    message_id: str,
     session: ChatSession,
 ) -> None:
-    req_id = f"movies-c{convo_id}-t{int(time.time() * 1000)}"
+    """
+    Run the LangGraph and publish every event to Redis. Owns its own DB
+    sessions so the task is independent of the WebSocket connection.
+    """
+    req_id = f"movies-c{convo_id}-m{message_id[:8]}"
     start_ts = time.time()
 
     assistant_chunks: list[str] = []
-    thinking_end_sent = False
+    thinking_end_published = False
     active_node: str | None = None
     final_generation_node: str | None = None
     interrupted = False
 
-    try:
-        logger.info("[%s] generation start (convo_id=%s)", req_id, convo_id)
-        await _send_event(websocket, "thinking_start", None)
+    await mark_active_generation(redis, convo_id, message_id)
 
-        langchain_messages = await _load_langchain_messages(db, convo_id, user_message)
+    try:
+        log.info(
+            "[%s] generation start (convo_id=%s message_id=%s)",
+            req_id,
+            convo_id,
+            message_id,
+        )
+        await _publish(redis, message_id, convo_id, "generation_started", message_id)
+        await _publish(redis, message_id, convo_id, "thinking_start", None)
+
+        async with AsyncSessionLocal() as db:
+            langchain_messages = await _load_langchain_messages(
+                db, convo_id, user_message
+            )
+
         if langchain_messages is None:
-            await _send_conversation_not_found_error(websocket)
+            await _publish_conversation_not_found(redis, message_id, convo_id)
+            await _cleanup(redis, convo_id, message_id)
             return
 
-        logger.info("[%s] history → %d msgs", req_id, len(langchain_messages))
-        await _send_event(websocket, "graph_start", None)
+        log.info("[%s] history → %d msgs", req_id, len(langchain_messages))
+        await _publish(redis, message_id, convo_id, "graph_start", None)
 
         graph_input = {
             "messages": langchain_messages,
@@ -71,17 +96,21 @@ async def generate_and_stream(
         async for event in app_graph.astream_events(
             graph_input, config={}, version="v1"
         ):
-            if session.interrupt_event.is_set():
+            if await is_interrupted(redis, message_id):
                 interrupted = True
                 break
 
             kind = event["event"]
             lg_node = event.get("metadata", {}).get("langgraph_node", "")
 
-            active_node = await _handle_node_transition(websocket, active_node, lg_node)
+            active_node = await _handle_node_transition(
+                redis, message_id, convo_id, active_node, lg_node
+            )
 
             if kind == "on_chain_end":
-                await _handle_chain_end_event(websocket, req_id, event, lg_node)
+                await _handle_chain_end_event(
+                    redis, message_id, convo_id, req_id, event, lg_node
+                )
 
             if kind == "on_chat_model_stream" and lg_node in {
                 "generate_retrieve",
@@ -89,24 +118,37 @@ async def generate_and_stream(
                 "reask_user",
             }:
                 final_generation_node = lg_node
-                thinking_end_sent = await _handle_stream_chunk(
-                    websocket, event, thinking_end_sent, assistant_chunks
+                thinking_end_published = await _handle_stream_chunk(
+                    redis,
+                    message_id,
+                    convo_id,
+                    event,
+                    thinking_end_published,
+                    assistant_chunks,
                 )
 
     except asyncio.CancelledError:
         interrupted = True
+        # Don't suppress: the task itself was cancelled (e.g. server shutdown).
+        # Run finalization in a shield-friendly fashion.
+        await _finalize_on_cancel(
+            redis, message_id, convo_id, req_id, assistant_chunks, active_node
+        )
+        await _cleanup(redis, convo_id, message_id)
+        raise
     except Exception:
-        logger.exception("[%s] LangGraph generation error", req_id)
-        await _handle_generation_failure(websocket, active_node)
+        log.exception("[%s] LangGraph generation error", req_id)
+        await _handle_generation_failure(redis, message_id, convo_id, active_node)
+        await _cleanup(redis, convo_id, message_id)
         return
 
     assistant_msg_id = await _finalize_generation(
-        websocket=websocket,
-        db=db,
-        req_id=req_id,
+        redis=redis,
+        message_id=message_id,
         convo_id=convo_id,
+        req_id=req_id,
         assistant_chunks=assistant_chunks,
-        thinking_end_sent=thinking_end_sent,
+        thinking_end_published=thinking_end_published,
         active_node=active_node,
         interrupted=interrupted,
     )
@@ -117,9 +159,7 @@ async def generate_and_stream(
         elif final_generation_node in {"generate_retrieve", "generate_general"}:
             session.consecutive_reasks = 0
 
-    # Launch background summarization for the NEXT turn.
-    # collect_summarization() will flush the result when the next message arrives.
-    if not session.client_disconnected and not interrupted:
+    if not interrupted:
         final_response = "".join(assistant_chunks).strip()
         session.current_msg_id_assistant = assistant_msg_id
         session.summarize_task = asyncio.create_task(
@@ -130,8 +170,10 @@ async def generate_and_stream(
             )
         )
 
+    await _cleanup(redis, convo_id, message_id)
+
     elapsed = time.time() - start_ts
-    logger.info(
+    log.info(
         "[%s] %s in %.2fs",
         req_id,
         "interrupted" if interrupted else "completed",
@@ -140,39 +182,49 @@ async def generate_and_stream(
 
 
 # ---------------------------------------------------------------------------
-# Event helpers
+# Event publishing helpers
 # ---------------------------------------------------------------------------
 
 
-def _ws_event(event_type: str, content: Any) -> str:
-    return json.dumps({"type": event_type, "content": content})
-
-
-async def _send_event(websocket: WebSocket, event_type: str, content: Any) -> None:
-    await _send_if_open(websocket, _ws_event(event_type, content))
+async def _publish(
+    redis: aioredis.Redis,
+    message_id: str,
+    convo_id: int,
+    event_type: str,
+    content: Any,
+) -> str:
+    return await publish_event(
+        redis=redis,
+        message_id=message_id,
+        event_type=event_type,
+        content=content,
+        conversation_id=convo_id,
+    )
 
 
 async def _handle_node_transition(
-    websocket: WebSocket,
+    redis: aioredis.Redis,
+    message_id: str,
+    convo_id: int,
     current_node: str | None,
     next_node: str | None,
 ) -> str | None:
-    """Emits node_end / node_start when the active graph node changes."""
     if next_node not in GRAPH_NODES or next_node == current_node:
         return current_node
     if current_node:
-        await _send_event(websocket, "node_end", current_node)
-    await _send_event(websocket, "node_start", next_node)
+        await _publish(redis, message_id, convo_id, "node_end", current_node)
+    await _publish(redis, message_id, convo_id, "node_start", next_node)
     return next_node
 
 
 async def _handle_chain_end_event(
-    websocket: WebSocket,
+    redis: aioredis.Redis,
+    message_id: str,
+    convo_id: int,
     req_id: str,
     event: dict[str, Any],
     lg_node: str,
 ) -> None:
-    """Emits node_output with useful metadata for the client (LangGraphPanel)."""
     if lg_node not in GRAPH_NODES:
         return
     output = event.get("data", {}).get("output", {})
@@ -180,25 +232,28 @@ async def _handle_chain_end_event(
         return
     node_payload = _build_node_output_payload(lg_node, output)
     if node_payload:
-        await _send_event(websocket, "node_output", json.dumps(node_payload))
+        await _publish(
+            redis, message_id, convo_id, "node_output", json.dumps(node_payload)
+        )
 
 
 async def _handle_stream_chunk(
-    websocket: WebSocket,
+    redis: aioredis.Redis,
+    message_id: str,
+    convo_id: int,
     event: dict[str, Any],
-    thinking_end_sent: bool,
+    thinking_end_published: bool,
     assistant_chunks: list[str],
 ) -> bool:
-    """Sends a token to the client; emits thinking_end on the first."""
     content = event["data"]["chunk"].content
     if not content:
-        return thinking_end_sent
-    if not thinking_end_sent:
-        await _send_event(websocket, "thinking_end", None)
-        thinking_end_sent = True
+        return thinking_end_published
+    if not thinking_end_published:
+        await _publish(redis, message_id, convo_id, "thinking_end", None)
+        thinking_end_published = True
     assistant_chunks.append(content)
-    await _send_event(websocket, "response_chunk", content)
-    return thinking_end_sent
+    await _publish(redis, message_id, convo_id, "response_chunk", content)
+    return thinking_end_published
 
 
 def _build_node_output_payload(
@@ -229,97 +284,115 @@ def _build_node_output_payload(
 
 
 async def _finalize_generation(
-    websocket: WebSocket,
-    db: AsyncSession,
-    req_id: str,
+    redis: aioredis.Redis,
+    message_id: str,
     convo_id: int,
+    req_id: str,
     assistant_chunks: list[str],
-    thinking_end_sent: bool,
+    thinking_end_published: bool,
     active_node: str | None,
     interrupted: bool,
 ) -> int | None:
-    """
-    Closes streaming events and persists the assistant's response.
-
-    DB writes always run (even on disconnect) so partial responses are saved
-    with the interrupted suffix. WS sends are safe: send_if_open silently
-    drops frames when the socket is already closed.
-
-    Returns the DB id of the persisted assistant message, or None if skipped.
-    """
     if active_node:
-        await _send_event(websocket, "node_end", active_node)
+        await _publish(redis, message_id, convo_id, "node_end", active_node)
 
     final_response = "".join(assistant_chunks).strip()
 
     if interrupted and final_response:
-        await _send_event(websocket, "response_chunk", INTERRUPTED_SUFFIX)
+        await _publish(
+            redis, message_id, convo_id, "response_chunk", INTERRUPTED_SUFFIX
+        )
         final_response += INTERRUPTED_SUFFIX
 
-    if not thinking_end_sent:
-        await _send_event(websocket, "thinking_end", None)
+    if not thinking_end_published:
+        await _publish(redis, message_id, convo_id, "thinking_end", None)
 
     assistant_msg_id: int | None = None
     if final_response:
         assistant_msg_id = await _persist_assistant_response(
-            db, convo_id, final_response, req_id
+            convo_id, final_response, req_id
         )
     elif not interrupted:
-        logger.error("[%s] no tokens received from model", req_id)
-        await send_response(
-            websocket,
-            build_error_response(
-                message="No tokens received from the model.",
-                error_code="empty_generation",
-                retryable=True,
-            ),
+        log.error("[%s] no tokens received from model", req_id)
+        await _publish(
+            redis,
+            message_id,
+            convo_id,
+            "error",
+            "No tokens received from the model.",
         )
 
-    await _send_event(websocket, "graph_end", None)
-    await _send_event(websocket, "response_done", "")
+    await _publish(redis, message_id, convo_id, "graph_end", None)
+    await _publish(redis, message_id, convo_id, "response_done", "")
     return assistant_msg_id
 
 
+async def _finalize_on_cancel(
+    redis: aioredis.Redis,
+    message_id: str,
+    convo_id: int,
+    req_id: str,
+    assistant_chunks: list[str],
+    active_node: str | None,
+) -> None:
+    """Best-effort terminal events when the task itself is cancelled."""
+    try:
+        if active_node:
+            await _publish(redis, message_id, convo_id, "node_end", active_node)
+        final_response = "".join(assistant_chunks).strip()
+        if final_response:
+            await _publish(
+                redis, message_id, convo_id, "response_chunk", INTERRUPTED_SUFFIX
+            )
+            await _persist_assistant_response(
+                convo_id, final_response + INTERRUPTED_SUFFIX, req_id
+            )
+        await _publish(redis, message_id, convo_id, "graph_end", None)
+        await _publish(redis, message_id, convo_id, "response_done", "")
+    except Exception:
+        log.exception("[%s] finalize-on-cancel failed", req_id)
+
+
 async def _handle_generation_failure(
-    websocket: WebSocket,
+    redis: aioredis.Redis,
+    message_id: str,
+    convo_id: int,
     active_node: str | None,
 ) -> None:
     if active_node:
-        await _send_event(websocket, "node_end", active_node)
-    await _send_event(websocket, "graph_end", None)
-    await send_response(
-        websocket,
-        build_error_response(
-            message="Could not generate a response right now. Please try again.",
-            error_code="generation_failed",
-            retryable=True,
-        ),
+        await _publish(redis, message_id, convo_id, "node_end", active_node)
+    await _publish(redis, message_id, convo_id, "graph_end", None)
+    await _publish(
+        redis,
+        message_id,
+        convo_id,
+        "error",
+        "Could not generate a response right now. Please try again.",
     )
-    await _send_event(websocket, "response_done", "")
+    await _publish(redis, message_id, convo_id, "response_done", "")
 
 
 # ---------------------------------------------------------------------------
-# DB helpers
+# DB helpers (own session)
 # ---------------------------------------------------------------------------
 
 
 async def _persist_assistant_response(
-    db: AsyncSession,
     convo_id: int,
     final_response: str,
     req_id: str,
 ) -> int | None:
     try:
-        msg = await add_message(
-            db=db,
-            conversation_id=convo_id,
-            role="assistant",
-            content=final_response,
-        )
-        return msg.id
+        async with AsyncSessionLocal() as db:
+            msg = await add_message(
+                db=db,
+                conversation_id=convo_id,
+                role="assistant",
+                content=final_response,
+            )
+            return msg.id
     except Exception:
-        await db.rollback()
-        logger.warning("[%s] failed to save assistant message", req_id)
+        log.warning("[%s] failed to save assistant message", req_id)
         return None
 
 
@@ -349,15 +422,23 @@ def _map_messages_to_langchain(recent_msgs: list[Any], user_message: str) -> lis
     return langchain_messages or [HumanMessage(content=user_message)]
 
 
-async def _send_conversation_not_found_error(websocket: WebSocket) -> None:
-    await _send_event(websocket, "thinking_end", None)
-    await _send_event(websocket, "graph_end", None)
-    await send_response(
-        websocket,
-        build_error_response(
-            message="Conversation not found.",
-            error_code="conversation_not_found",
-            retryable=False,
-        ),
-    )
-    await _send_event(websocket, "response_done", "")
+async def _publish_conversation_not_found(
+    redis: aioredis.Redis, message_id: str, convo_id: int
+) -> None:
+    await _publish(redis, message_id, convo_id, "thinking_end", None)
+    await _publish(redis, message_id, convo_id, "graph_end", None)
+    await _publish(redis, message_id, convo_id, "error", "Conversation not found.")
+    await _publish(redis, message_id, convo_id, "response_done", "")
+
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+
+
+async def _cleanup(redis: aioredis.Redis, convo_id: int, message_id: str) -> None:
+    try:
+        await clear_active_generation(redis, convo_id)
+        await clear_interrupt(redis, message_id)
+    except Exception:
+        log.exception("cleanup failed for convo=%s msg=%s", convo_id, message_id)

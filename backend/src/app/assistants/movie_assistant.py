@@ -10,8 +10,9 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
+from qdrant_client import models
 
-from app.core.config.settings import qdrantsettings, llmsettings
+from app.core.settings import llmsettings, qdrantsettings
 from app.prompts import (
     CONTEXTUALIZE_SYSTEM_PROMPT,
     CONTEXTUALIZE_USER_PROMPT,
@@ -22,8 +23,6 @@ from app.prompts import (
 )
 from app.services.llm import llm_primary, llm_secondary
 from app.services.retriever import HybridSearcher
-from qdrant_client import models
-
 
 logging.basicConfig(
     level=logging.INFO,

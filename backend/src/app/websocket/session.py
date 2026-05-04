@@ -3,7 +3,7 @@ WebSocket chat session state and shared constants.
 """
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -35,37 +35,51 @@ app_graph = build_app()
 
 @dataclass
 class ChatSession:
-    """All mutable state for a WebSocket connection.
+    """Mutable state for a WebSocket connection.
+
+    With the Redis stream-bus refactor, generation lives in its own task and
+    survives WebSocket disconnects. A separate relay task forwards stream
+    events to the active socket; only the relay is bound to the connection.
 
     - convo_id: active conversation.
-    - generation_task: running asyncio generation task.
+    - active_message_id: id of the in-flight generation (Redis namespace).
+    - relay_task: forwards Redis events to the WebSocket; tied to the socket.
     - summarize_task: background summarization task for the previous turn.
     - current_msg_id: DB id of the previous turn's user message (to be updated).
-    - current_msg_id_assistant: DB id of the previous turn's assistant message (to be updated).
-    - interrupt_event: shared interrupt signal with the generation task.
-    - client_disconnected: disables WS sends after disconnect (DB writes still happen).
+    - current_msg_id_assistant: DB id of the previous turn's assistant message.
+    - last_stream_id: last Redis entry id forwarded to the client (for replay).
+    - client_disconnected: disables WS sends after disconnect.
     - consecutive_reasks: number of consecutive reask_user nodes.
     """
 
     convo_id: int | None = None
-    generation_task: asyncio.Task | None = None
+    active_message_id: str | None = None
+    relay_task: asyncio.Task | None = None
     summarize_task: asyncio.Task | None = None
     current_msg_id: int | None = None
     current_msg_id_assistant: int | None = None
-    interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
+    last_stream_id: str = "0-0"
     client_disconnected: bool = False
     consecutive_reasks: int = 0
 
-    async def cancel_generation(self) -> None:
-        """Cancel the running generation task if any."""
-        if self.generation_task and not self.generation_task.done():
-            self.interrupt_event.set()
-            self.generation_task.cancel()
+    # ------------------------------------------------------------------
+    # Relay lifecycle
+    # ------------------------------------------------------------------
+
+    async def cancel_relay(self) -> None:
+        """Cancel the running relay task (does NOT cancel generation)."""
+        task = self.relay_task
+        self.relay_task = None
+        if task and not task.done():
+            task.cancel()
             try:
-                await self.generation_task
+                await task
             except (asyncio.CancelledError, Exception):
                 pass
-        self.generation_task = None
+
+    # ------------------------------------------------------------------
+    # Summarization handoff (unchanged from previous design)
+    # ------------------------------------------------------------------
 
     async def collect_summarization(self, db: AsyncSession) -> None:
         """
@@ -93,5 +107,10 @@ class ChatSession:
         self.current_msg_id = None
         self.current_msg_id_assistant = None
 
-    def reset_interrupt(self) -> None:
-        self.interrupt_event.clear()
+    # ------------------------------------------------------------------
+    # Stream-id bookkeeping
+    # ------------------------------------------------------------------
+
+    def reset_stream(self, message_id: str | None) -> None:
+        self.active_message_id = message_id
+        self.last_stream_id = "0-0"

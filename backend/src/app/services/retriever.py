@@ -6,7 +6,7 @@ from fastembed.rerank.cross_encoder import TextCrossEncoder
 from langchain_core.documents import Document
 from qdrant_client import AsyncQdrantClient, models
 
-from app.core.config.settings import qdrantsettings
+from app.core.settings import qdrantsettings
 
 
 def _sigmoid(x: float) -> float:

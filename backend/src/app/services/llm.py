@@ -5,8 +5,7 @@ This is to avoid creating a new LLM instance for each message.
 
 from langchain_openai import ChatOpenAI
 
-from app.core.config.settings import llmsettings
-
+from app.core.settings import llmsettings
 
 llm_primary = ChatOpenAI(
     base_url=llmsettings.openai_base_url,

@@ -1,12 +1,9 @@
 import httpx
-
 from fastapi import APIRouter
 
-from app.core.config.logger import get_logger
-from app.core.config.settings import llmsettings
-
-
-logger = get_logger(__name__)
+from app.core.logger import log
+from app.core.redis import ping_redis
+from app.core.settings import llmsettings
 
 router = APIRouter()
 
@@ -14,14 +11,13 @@ router = APIRouter()
 @router.get("/", summary="Health Check")
 async def health_check():
     """
-    Health check endpoint to verify the API and LLM service are running.
+    Health check endpoint to verify the API, LLM and Redis services.
 
     Returns:
         dict: Status information
     """
     llm_status = "connected"
 
-    # Check LLM backend (OpenAI, OpenCode, or custom OpenAI-compatible API)
     try:
         base_url = llmsettings.openai_base_url.rstrip("/")
         health_url = (
@@ -35,18 +31,26 @@ async def health_check():
             response.raise_for_status()
     except Exception as e:
         llm_status = "disconnected"
-        logger.error(f"LLM health check failed: {e}")
+        log.error("llm_health_check_failed", error=str(e))
+
+    redis_status = "connected" if await ping_redis() else "disconnected"
 
     status = "ok"
-    if llm_status == "disconnected":
+    if llm_status == "disconnected" or redis_status == "disconnected":
         status = "degraded"
 
     message = "API is running"
     if status == "degraded":
-        message += " but LLM health check failed"
+        bad = []
+        if llm_status == "disconnected":
+            bad.append("LLM")
+        if redis_status == "disconnected":
+            bad.append("Redis")
+        message += f" but {', '.join(bad)} health check failed"
 
     return {
         "status": status,
         "message": message,
         "llm": llm_status,
+        "redis": redis_status,
     }
