@@ -8,9 +8,9 @@ from typing import Annotated, TypeAlias
 import redis.asyncio as aioredis
 from fastapi import Depends
 
-from app.core.settings import redissettings
+from app.core.settings import redis_settings
 
-_pool = aioredis.ConnectionPool.from_url(redissettings.redis_url, decode_responses=True)
+_pool = aioredis.ConnectionPool.from_url(redis_settings.url, decode_responses=True)
 
 
 def get_redis() -> aioredis.Redis:

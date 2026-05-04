@@ -3,7 +3,7 @@ from fastapi import APIRouter
 
 from app.core.logger import log
 from app.core.redis import ping_redis
-from app.core.settings import llmsettings
+from app.core.settings import llm_settings
 
 router = APIRouter()
 
@@ -19,7 +19,7 @@ async def health_check():
     llm_status = "connected"
 
     try:
-        base_url = llmsettings.openai_base_url.rstrip("/")
+        base_url = llm_settings.openai_base_url.rstrip("/")
         health_url = (
             f"{base_url[:-3]}/models"
             if base_url.endswith("/v1")

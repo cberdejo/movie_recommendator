@@ -9,7 +9,6 @@ events to the live socket via the relay.
 import asyncio
 import json
 import uuid
-from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -29,6 +28,7 @@ from app.services.stream_bus import (
     stream_exists,
 )
 from app.websocket.generation import generate_to_redis
+from app.utils.text import build_conversation_title
 from app.websocket.protocol import (
     build_error_response,
     request_validation_error,
@@ -125,7 +125,7 @@ async def ws_handler_movies(websocket: WebSocket, db: AsyncSession) -> None:
 async def _handle_interrupt(
     websocket: WebSocket,
     redis,
-    req: Any,
+    req: WSRequest,
     session: ChatSession,
 ) -> None:
     target_id = req.message_id or session.active_message_id
@@ -138,14 +138,14 @@ async def _handle_start_conversation(
     websocket: WebSocket,
     db: AsyncSession,
     redis,
-    req: Any,
+    req: WSRequest,
     session: ChatSession,
 ) -> None:
     await session.collect_summarization(db)
     await session.cancel_relay()
     session.consecutive_reasks = 0
 
-    title = _build_conversation_title(req.message or "")
+    title = build_conversation_title(req.message)
 
     try:
         convo = await create_conversation(
@@ -189,7 +189,7 @@ async def _handle_resume_conversation(
     websocket: WebSocket,
     db: AsyncSession,
     redis,
-    req: Any,
+    req: WSRequest,
     session: ChatSession,
 ) -> None:
     same_convo = req.convo_id == session.convo_id
@@ -262,7 +262,7 @@ async def _handle_resume_conversation(
 async def _handle_resume_stream(
     websocket: WebSocket,
     redis,
-    req: Any,
+    req: WSRequest,
     session: ChatSession,
 ) -> None:
     """Continue forwarding an in-flight stream from a known entry id."""
@@ -288,7 +288,7 @@ async def _handle_message(
     websocket: WebSocket,
     db: AsyncSession,
     redis,
-    req: Any,
+    req: WSRequest,
     session: ChatSession,
 ) -> None:
     if not session.convo_id:
@@ -392,7 +392,3 @@ async def _start_relay(
             from_id=from_id,
         )
     )
-
-
-def _build_conversation_title(message: str) -> str:
-    return message[:30] + ("..." if len(message) > 30 else "")

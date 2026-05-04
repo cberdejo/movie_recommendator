@@ -1,6 +1,6 @@
 import uvicorn
 
-from app.core.settings import apisettings
+from app.core.settings import api_settings
 
 
 def main():
@@ -10,8 +10,8 @@ def main():
 
     uvicorn.run(
         "app.application:app",
-        host=apisettings.host,
-        port=apisettings.port,
+        host=api_settings.host,
+        port=api_settings.port,
         reload=True,
     )
 

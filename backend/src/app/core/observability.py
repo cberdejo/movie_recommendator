@@ -8,12 +8,12 @@ otherwise so dev environments without credentials boot cleanly.
 from typing import Optional
 
 from app.core.logger import log
-from app.core.settings import observabilitysettings
+from app.core.settings import observability_settings
 
 
 def init_langfuse() -> Optional[object]:
     """Initialise the Langfuse client. Returns None if disabled."""
-    if not observabilitysettings.enabled:
+    if not observability_settings.enabled:
         log.info("langfuse_disabled")
         return None
 
@@ -24,23 +24,21 @@ def init_langfuse() -> Optional[object]:
         return None
 
     Langfuse(
-        host=observabilitysettings.langfuse_host or None,
-        public_key=observabilitysettings.langfuse_public_key,
-        secret_key=observabilitysettings.langfuse_secret_key,
-        sample_rate=observabilitysettings.langfuse_sample_rate,
+        host=observability_settings.host or None,
+        public_key=observability_settings.public_key,
+        secret_key=observability_settings.secret_key,
+        sample_rate=observability_settings.sample_rate,
     )
     client = get_client()
     try:
         if client.auth_check():
             log.info(
                 "langfuse_connected",
-                host=observabilitysettings.langfuse_host,
-                sample_rate=observabilitysettings.langfuse_sample_rate,
+                host=observability_settings.host,
+                sample_rate=observability_settings.sample_rate,
             )
         else:
-            log.warning(
-                "langfuse_auth_failed", host=observabilitysettings.langfuse_host
-            )
+            log.warning("langfuse_auth_failed", host=observability_settings.host)
     except Exception:
         log.exception("langfuse_init_error")
         return None

@@ -10,7 +10,7 @@ import logging
 
 import structlog
 
-from app.core.settings import loggingsettings
+from app.core.settings import logging_settings
 
 _LEVEL_MAP = {
     "critical": logging.CRITICAL,
@@ -50,7 +50,7 @@ def setup_logging() -> None:
 
     logs_render = (
         structlog.processors.JSONRenderer()
-        if loggingsettings.log_format == "json"
+        if logging_settings.log_format == "json"
         else structlog.dev.ConsoleRenderer(colors=True)
     )
 
@@ -70,7 +70,7 @@ def setup_logging() -> None:
         root_logger.removeHandler(h)
     root_logger.addHandler(handler)
     root_logger.setLevel(
-        _LEVEL_MAP.get(loggingsettings.log_level.lower(), logging.INFO)
+        _LEVEL_MAP.get(logging_settings.log_level.lower(), logging.INFO)
     )
 
     for _name in ("uvicorn", "uvicorn.error"):
@@ -83,9 +83,9 @@ def setup_logging() -> None:
 setup_logging()
 
 
-log = structlog.get_logger("chat-api").bind(environment=loggingsettings.environment)
+log = structlog.get_logger("chat-api").bind(environment=logging_settings.environment)
 log.info(
     "logging_initialized",
-    log_level=loggingsettings.log_level,
-    log_format=loggingsettings.log_format,
+    log_level=logging_settings.log_level,
+    log_format=logging_settings.log_format,
 )

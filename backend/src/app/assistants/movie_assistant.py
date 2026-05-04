@@ -2,7 +2,7 @@
 LangGraph assistant for movie recommendations with semantic search.
 """
 
-import logging
+import json
 import operator
 from typing import Annotated, Any, TypedDict
 
@@ -12,7 +12,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 from qdrant_client import models
 
-from app.core.settings import llmsettings, qdrantsettings
+from app.core.logger import log
+from app.core.settings import llm_settings, qdrant_settings
 from app.prompts import (
     CONTEXTUALIZE_SYSTEM_PROMPT,
     CONTEXTUALIZE_USER_PROMPT,
@@ -24,18 +25,11 @@ from app.prompts import (
 from app.services.llm import llm_primary, llm_secondary
 from app.services.retriever import HybridSearcher
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
-
 # ---------------------------------------------------------------------------
 # Retrieval quality thresholds
 # Tune these values against your Qdrant collection's score distribution.
 # ---------------------------------------------------------------------------
-MAX_REASK_COUNT = 1
+MAX_REASK_COUNT = 1  # Maximum number of re-ask attempts before forcing generation
 RETRIEVAL_SCORE_THRESHOLD = (
     0.5  # minimum acceptable best-result score — tune to your collection
 )
@@ -43,8 +37,8 @@ RETRIEVAL_SCORE_THRESHOLD = (
 
 # HybridSearcher singleton
 searcher = HybridSearcher(
-    url=qdrantsettings.qdrant_endpoint,
-    collection_name=qdrantsettings.qdrant_collection,
+    url=qdrant_settings.qdrant_endpoint,
+    collection_name=qdrant_settings.collection,
 )
 
 
@@ -102,7 +96,7 @@ def format_history(messages: list[AnyMessage]) -> str:
     if len(flat) < 2:
         return "No previous history."
 
-    window = flat[:-1][-llmsettings.number_of_messages_to_contextualize :]
+    window = flat[:-1][-llm_settings.number_of_messages_to_contextualize :]
     lines = []
     for msg in window:
         if hasattr(msg, "type"):
@@ -134,7 +128,7 @@ def _retrieval_quality_ok(results: list[dict[str, Any]]) -> bool:
     """Return True when the best reranker score meets the minimum threshold."""
     if not results:
         return False
-    logger.info(
+    log.info(
         "retrieve: %d docs  rerank_scores=%s",
         len(results),
         [round(r.get("score", 0), 3) for r in results[:5]],
@@ -164,9 +158,7 @@ async def router_node(state: AgentState) -> dict:
     media_type = "any"
 
     try:
-        import json as _json
-
-        parsed = _json.loads(raw.strip())
+        parsed = json.loads(raw.strip())
         intent = parsed.get("intent", "GENERAL").strip().upper()
         decision = "RETRIEVE" if "RETRIEVE" in intent else "GENERAL"
         media_type = parsed.get("media_type", "any").strip().lower()
@@ -175,9 +167,9 @@ async def router_node(state: AgentState) -> dict:
     except Exception:
         if "RETRIEVE" in raw.strip().upper():
             decision = "RETRIEVE"
-        logger.warning("router: could not parse JSON %r, using defaults", raw)
+        log.warning("router: could not parse JSON %r, using defaults", raw)
 
-    logger.info(
+    log.info(
         "router: intent=%s  media_type=%s  question=%r", decision, media_type, question
     )
     return {"decision": decision, "media_type": media_type}
@@ -201,13 +193,13 @@ async def contextualize_question(state: AgentState) -> dict:
             {"chat_history": format_history(messages), "question": raw_question}
         )
         contextualized_question = result.strip() or raw_question
-        logger.info("contextualize_question: %r → %r", raw_question, result)
+        log.info("contextualize_question: %r → %r", raw_question, result)
         return {
             "contextualized_question": contextualized_question,
             "rewrote": contextualized_question != raw_question,
         }
     except Exception:
-        logger.exception("contextualize_question failed, falling back to raw question")
+        log.exception("contextualize_question failed, falling back to raw question")
         return {"contextualized_question": raw_question, "rewrote": False}
 
 
@@ -223,7 +215,7 @@ async def retrieve(state: AgentState) -> dict:
     media_type = state.get("media_type", "any")
     qdrant_filter = _build_media_filter(media_type)
 
-    logger.info(
+    log.info(
         "retrieve: query=%r  media_type=%s",
         state["contextualized_question"],
         media_type,
@@ -234,7 +226,7 @@ async def retrieve(state: AgentState) -> dict:
 
     quality_ok = _retrieval_quality_ok(results)
     best_score = results[0].get("score", 0.0) if results else 0.0
-    logger.info(
+    log.info(
         "retrieve: %d docs  best_score=%.3f  quality_ok=%s",
         len(results),
         best_score,
@@ -300,14 +292,14 @@ async def reask_user(state: AgentState) -> dict:
         response = await chain.ainvoke({"question": question})
         response = response.strip()
     except Exception:
-        logger.exception("reask_user: LLM call failed, using generic fallback")
+        log.exception("reask_user: LLM call failed, using generic fallback")
         response = (
             "I couldn't find enough information to answer your question well. "
             "Could you give me more details? For example: the title, a specific actor "
             "or director, the genre, or roughly when it was released?"
         )
 
-    logger.info("reask_user: question=%r  reask=%r", question, response)
+    log.info("reask_user: question=%r  reask=%r", question, response)
     return {
         "generation": response,
         "messages": [AIMessage(content=response)],

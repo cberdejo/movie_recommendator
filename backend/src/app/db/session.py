@@ -1,9 +1,9 @@
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.core.settings import apisettings
+from app.core.settings import api_settings
 
-async_engine = create_async_engine(apisettings.database_uri, echo=True, future=True)
+async_engine = create_async_engine(api_settings.database_uri, echo=True, future=True)
 
 AsyncSessionLocal = async_sessionmaker(
     bind=async_engine,

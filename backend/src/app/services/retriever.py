@@ -6,19 +6,36 @@ from fastembed.rerank.cross_encoder import TextCrossEncoder
 from langchain_core.documents import Document
 from qdrant_client import AsyncQdrantClient, models
 
-from app.core.settings import qdrantsettings
+from app.core.settings import qdrant_settings
 
 
 def _sigmoid(x: float) -> float:
+    """
+    Apply the sigmoid function to normalize a value to [0, 1].
+
+    Args:
+        x: Input value (can be any real number).
+
+    Returns:
+        Sigmoid of x, bounded in (0, 1).
+    """
     return 1.0 / (1.0 + math.exp(-x))
 
 
 class HybridSearcher:
+    """
+    Hybrid search combining dense and sparse vector retrieval with reranking.
+
+    Uses Qdrant for vector storage and fastembed for encoding.
+    Supports both dense (neural) and sparse (lexical) retrieval
+    fused via Reciprocal Rank Fusion (RRF), with optional cross-encoder reranking.
+    """
+
     dense_vector_name = "dense"
     sparse_vector_name = "sparse"
-    dense_model_name = qdrantsettings.dense_model_name
-    sparse_model_name = qdrantsettings.sparse_model_name
-    reranker_model_name = qdrantsettings.reranker_model_name
+    dense_model_name = qdrant_settings.dense_model_name
+    sparse_model_name = qdrant_settings.sparse_model_name
+    reranker_model_name = qdrant_settings.reranker_model_name
 
     def __init__(
         self,
@@ -26,7 +43,16 @@ class HybridSearcher:
         collection_name: str,
         prefetch_limit: int = 15,
         final_limit: int = 5,
-    ):
+    ) -> None:
+        """
+        Initialize the hybrid searcher.
+
+        Args:
+            url: Qdrant server URL.
+            collection_name: Name of the collection to search.
+            prefetch_limit: Number of candidates to prefetch per query.
+            final_limit: Number of results to return after reranking.
+        """
         self.collection_name = collection_name
         self.async_qdrant_client = AsyncQdrantClient(url=url)
         self.reranker = TextCrossEncoder(model_name=self.reranker_model_name)

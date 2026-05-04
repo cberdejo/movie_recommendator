@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import selectinload
-from sqlmodel import select
+from sqlmodel import select, update
 from sqlmodel.ext.asyncio.session import AsyncSession
+
 from app.entities import Conversation, Message
 from app.schemas.conversation_schema import RoleEnum
 
@@ -69,9 +70,12 @@ async def add_message(
         thinking_time=thinking_time,
     )
     db.add(msg)
-    convo = await db.get(Conversation, conversation_id)
-    if convo:
-        convo.updated_at = datetime.now(timezone.utc)
+    # Update conversation timestamp without extra query using SQLModel update
+    await db.exec(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(updated_at=datetime.now(timezone.utc))
+    )
     await db.commit()
     await db.refresh(msg)
     return msg
@@ -140,8 +144,7 @@ async def get_conversation_with_messages(
         # with created_at as tie-breaker. This avoids issues where timestamps
         # might be out of order due to clock skew or transaction timing.
         convo.messages = sorted(
-            convo.messages,
-            key=lambda m: (m.id or 0, m.created_at or datetime.min)
+            convo.messages, key=lambda m: (m.id or 0, m.created_at or datetime.min)
         )
 
     return convo

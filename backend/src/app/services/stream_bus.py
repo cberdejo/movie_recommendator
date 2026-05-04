@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 import redis.asyncio as aioredis
 
-from app.core.settings import redissettings
+from app.core.settings import redis_settings
 
 # ---------------------------------------------------------------------------
 # Key helpers
@@ -24,7 +24,7 @@ from app.core.settings import redissettings
 
 
 def build_stream_key(message_id: str) -> str:
-    return f"{redissettings.stream_key_prefix}{message_id}"
+    return f"{redis_settings.stream_key_prefix}{message_id}"
 
 
 def _active_key(conversation_id: int | str) -> str:
@@ -73,7 +73,7 @@ async def publish_event(
 
     key = build_stream_key(message_id)
     entry_id = await redis.xadd(key, fields)
-    await redis.expire(key, redissettings.stream_ttl)
+    await redis.expire(key, redis_settings.stream_ttl)
     return entry_id
 
 
@@ -94,7 +94,7 @@ async def read_stream(
     the beginning). Returns a list of (entry_id, fields) tuples, possibly empty.
     """
     if block_ms is None:
-        block_ms = redissettings.stream_read_block_ms
+        block_ms = redis_settings.stream_read_block_ms
 
     key = build_stream_key(message_id)
     result = await redis.xread({key: from_id}, block=block_ms, count=count)
@@ -138,7 +138,7 @@ async def mark_active_generation(
     await redis.set(
         _active_key(conversation_id),
         message_id,
-        ex=redissettings.active_generation_ttl,
+        ex=redis_settings.active_generation_ttl,
     )
 
 
@@ -160,7 +160,7 @@ async def clear_active_generation(
 
 
 async def request_interrupt(redis: aioredis.Redis, message_id: str) -> None:
-    await redis.set(_interrupt_key(message_id), "1", ex=redissettings.interrupt_ttl)
+    await redis.set(_interrupt_key(message_id), "1", ex=redis_settings.interrupt_ttl)
 
 
 async def is_interrupted(redis: aioredis.Redis, message_id: str) -> bool:

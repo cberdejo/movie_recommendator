@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.assistants.movie_assistant import build_app
+from app.core.logger import log
 from app.crud.conversation_crud import update_message_content
 
 INTERRUPTED_SUFFIX = "\n\n[message interrupted by the user]"
@@ -99,7 +100,8 @@ class ChatSession:
                         db, self.current_msg_id_assistant, assistant_summary
                     )
             except Exception:
-                pass  # fallback: content stays as raw, which is correct
+                log.exception("summarization: failed to compress messages")
+                # fallback: content stays as raw, which is correct
         else:
             self.summarize_task.cancel()
 

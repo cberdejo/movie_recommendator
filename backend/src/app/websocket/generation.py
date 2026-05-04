@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.logger import log
-from app.core.settings import llmsettings
+from app.core.settings import llm_settings
 from app.crud.conversation_crud import (
     add_message,
     get_conversation_with_messages_limited,
@@ -166,7 +166,7 @@ async def generate_to_redis(
             compress_pair(
                 user_message=user_message,
                 assistant_message=final_response,
-                token_threshold=llmsettings.message_token_threshold,
+                token_threshold=llm_settings.message_token_threshold,
             )
         )
 
@@ -404,7 +404,7 @@ async def _load_langchain_messages(
     recent_msgs = await get_conversation_with_messages_limited(
         conversation_id=convo_id,
         db=db,
-        number_of_messages=llmsettings.number_of_messages_to_contextualize,
+        number_of_messages=llm_settings.number_of_messages_to_contextualize,
     )
     if recent_msgs is None:
         return None

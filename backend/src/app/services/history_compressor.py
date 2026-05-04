@@ -6,7 +6,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.core.logger import log
-from app.core.settings import llmsettings
+from app.core.settings import llm_settings
 from app.prompts import SUMMARIZE_SYSTEM_PROMPT
 from app.services.llm import llm_secondary
 
@@ -49,7 +49,7 @@ async def compress_pair(
     Returns:
         Tuple of (user_message, assistant_message), each possibly summarized.
     """
-    threshold = token_threshold or llmsettings.message_token_threshold
+    threshold = token_threshold or llm_settings.message_token_threshold
 
     compressed_user = (
         await _summarize(user_message)

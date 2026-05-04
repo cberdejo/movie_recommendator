@@ -14,6 +14,7 @@ from app.crud.conversation_crud import (
     update_conversation_title,
 )
 from app.db.session import get_session
+from app.utils.text import build_conversation_title
 from app.schemas.conversation_schema import (
     ConversationExtendedRead,
     ConversationRead,
@@ -40,8 +41,7 @@ async def create_conversation_endpoint(
         A 201 Created response with the created conversation.
         A 500 Internal Server Error response if there is an error creating the conversation.
     """
-    base = (req.message or "").strip()
-    title = (base[:30] + "...") if len(base) > 30 else (base or "New Conversation")
+    title = build_conversation_title(req.message)
 
     try:
         convo = await create_conversation(
