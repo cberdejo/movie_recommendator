@@ -4,9 +4,11 @@ export type WSMessageType =
   | "message"
   | "start_conversation"
   | "resume_conversation"
+  | "resume_stream"
   | "interrupt";
 
 export type WSResponseType =
+  | "generation_started"
   | "thinking_start"
   | "thinking_chunk"
   | "thinking_end"
@@ -19,7 +21,8 @@ export type WSResponseType =
   | "graph_end"
   | "node_start"
   | "node_end"
-  | "node_output";
+  | "node_output"
+  | "interrupt_ack";
 
 export interface WSBasePayload {
   type: WSMessageType;
@@ -39,20 +42,37 @@ export interface WSMessagePayload extends WSBasePayload {
 export interface WSResumeConversationPayload extends WSBasePayload {
   type: "resume_conversation";
   convo_id: number;
+  message_id?: string;
+  from_id?: string;
+}
+
+export interface WSResumeStreamPayload extends WSBasePayload {
+  type: "resume_stream";
+  convo_id: number;
+  message_id: string;
+  from_id?: string;
 }
 
 export interface WSInterruptPayload extends WSBasePayload {
   type: "interrupt";
+  message_id?: string;
 }
 
 export interface WSResponse {
   type: WSResponseType;
-  content?: string;
+  content?: string | number | null;
+  stream_id?: string;
+  message_id?: string;
+  conversation_id?: number;
+  error_code?: string;
+  retryable?: boolean;
 }
 
 export type WSEventType =
   | "connected"
   | "disconnected"
+  | "stream_update"
+  | "generation_started"
   | "thinking_start"
   | "thinking_chunk"
   | "thinking_end"
@@ -191,7 +211,15 @@ class WebSocketService {
     try {
       const response = JSON.parse(data) as WSResponse;
 
+      if (response.stream_id || response.message_id || response.conversation_id) {
+        this.triggerEvent("stream_update", response);
+      }
+
       switch (response.type) {
+        case "generation_started":
+          this.triggerEvent("generation_started", response);
+          break;
+
         case "thinking_start":
           this.triggerEvent("thinking_start", null);
           break;
@@ -217,7 +245,7 @@ class WebSocketService {
           break;
 
         case "response_done":
-          this.triggerEvent("response_done", null);
+          this.triggerEvent("response_done", response);
           break;
 
         case "graph_start":
@@ -242,6 +270,10 @@ class WebSocketService {
 
         case "error":
           this.triggerEvent("error", response.content);
+          break;
+
+        case "interrupt_ack":
+          this.triggerEvent("interrupt_ack", response);
           break;
 
         default:
@@ -276,19 +308,41 @@ class WebSocketService {
     return this.sendPayload(payload);
   }
 
-  public async resumeConversation(convoId: number): Promise<boolean> {
+  public async resumeConversation(
+    convoId: number,
+    messageId?: string,
+    fromId?: string,
+  ): Promise<boolean> {
     const payload: WSResumeConversationPayload = {
       type: "resume_conversation",
       convo_id: convoId,
+      message_id: messageId,
+      from_id: fromId,
     };
 
     return this.sendPayload(payload);
   }
 
-  public sendInterrupt(): boolean {
+  public async resumeStream(
+    convoId: number,
+    messageId: string,
+    fromId?: string,
+  ): Promise<boolean> {
+    const payload: WSResumeStreamPayload = {
+      type: "resume_stream",
+      convo_id: convoId,
+      message_id: messageId,
+      from_id: fromId,
+    };
+
+    return this.sendPayload(payload);
+  }
+
+  public sendInterrupt(messageId?: string): boolean {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     try {
-      this.ws.send(JSON.stringify({ type: "interrupt" }));
+      const payload: WSInterruptPayload = { type: "interrupt", message_id: messageId };
+      this.ws.send(JSON.stringify(payload));
       return true;
     } catch {
       return false;

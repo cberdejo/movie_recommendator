@@ -22,6 +22,48 @@ const generateTempId = () => {
   return Date.now() * 1000 + tempIdCounter;
 };
 
+interface ActiveStreamState {
+  conversationId: number;
+  messageId: string;
+  lastStreamId: string;
+  assistantMessageId?: number;
+}
+
+const streamStorageKey = (conversationId: number) =>
+  `movie_stream:${conversationId}`;
+
+const readActiveStreamState = (
+  conversationId: number,
+): ActiveStreamState | null => {
+  try {
+    const raw = sessionStorage.getItem(streamStorageKey(conversationId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ActiveStreamState>;
+    if (!parsed.messageId) return null;
+    return {
+      conversationId,
+      messageId: parsed.messageId,
+      lastStreamId: parsed.lastStreamId || "0-0",
+      assistantMessageId: parsed.assistantMessageId,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const writeActiveStreamState = (state: ActiveStreamState) => {
+  sessionStorage.setItem(streamStorageKey(state.conversationId), JSON.stringify(state));
+};
+
+const clearActiveStreamState = (conversationId: number) => {
+  sessionStorage.removeItem(streamStorageKey(conversationId));
+};
+
+const coerceConversationId = (value: unknown): number | null => {
+  const id = Number(value);
+  return Number.isInteger(id) ? id : null;
+};
+
 // ---------------------------------------------------------------------------
 // Graph types
 // ---------------------------------------------------------------------------
@@ -116,6 +158,7 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
 
   // --- response streaming ---
   const responseContentRef = useRef<string>("");
+  const activeStreamRef = useRef<ActiveStreamState | null>(null);
 
   // --- active message tracking ---
   // Set on the first response_chunk (or after thinking_end if thinking exists).
@@ -140,6 +183,7 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
     createNewConversation,
     updateMessageContent,
     updateMessageWithThinking,
+    getConversation,
   } = useConversationStore();
 
   // ---------------------------------------------------------------------------
@@ -214,6 +258,51 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
         resetGenerationState();
       },
 
+      stream_update: (response: any) => {
+        const conversationId =
+          coerceConversationId(response?.conversation_id) ||
+          selectedConversation?.ID ||
+          null;
+        const messageId = response?.message_id || response?.content;
+        if (!conversationId || !messageId || typeof messageId !== "string") return;
+
+        const existing =
+          activeStreamRef.current ||
+          readActiveStreamState(conversationId) || {
+            conversationId,
+            messageId,
+            lastStreamId: "0-0",
+          };
+
+        const next: ActiveStreamState = {
+          conversationId,
+          messageId,
+          lastStreamId: response?.stream_id || existing.lastStreamId || "0-0",
+          assistantMessageId:
+            activeMessageIdRef.current || existing.assistantMessageId,
+        };
+
+        activeStreamRef.current = next;
+        writeActiveStreamState(next);
+      },
+
+      generation_started: (response: any) => {
+        const conversationId =
+          coerceConversationId(response?.conversation_id) ||
+          selectedConversation?.ID ||
+          null;
+        const messageId = response?.message_id || response?.content;
+        if (!conversationId || !messageId || typeof messageId !== "string") return;
+
+        const state: ActiveStreamState = {
+          conversationId,
+          messageId,
+          lastStreamId: response?.stream_id || "0-0",
+        };
+        activeStreamRef.current = state;
+        writeActiveStreamState(state);
+      },
+
       // --- thinking ---
       thinking_start: () => {
         setIsThinking(true);
@@ -262,11 +351,15 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
 
         if (!activeMessageIdRef.current) {
           // Create assistant message on first chunk
-          const messageId = generateTempId();
-          activeMessageIdRef.current = messageId;
+          const streamState =
+            activeStreamRef.current ||
+            readActiveStreamState(selectedConversation.ID);
+          const assistantMessageId =
+            streamState?.assistantMessageId || generateTempId();
+          activeMessageIdRef.current = assistantMessageId;
 
           const assistantMessage: MessageType = {
-            ID: messageId,
+            ID: assistantMessageId,
             ConversationID: selectedConversation.ID,
             Role: "assistant",
             Content: responseContentRef.current,
@@ -276,7 +369,25 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
             CreatedAt: new Date().toISOString(),
           };
 
-          addMessageToConversation(selectedConversation.ID, assistantMessage);
+          const alreadyExists = selectedConversation.Messages?.some(
+            (msg) => msg.ID === assistantMessageId,
+          );
+
+          if (alreadyExists) {
+            updateMessageContent(
+              selectedConversation.ID,
+              assistantMessageId,
+              responseContentRef.current,
+            );
+          } else {
+            addMessageToConversation(selectedConversation.ID, assistantMessage);
+          }
+
+          if (streamState) {
+            const next = { ...streamState, assistantMessageId };
+            activeStreamRef.current = next;
+            writeActiveStreamState(next);
+          }
         } else {
           // Update content on subsequent chunks
           updateMessageContent(
@@ -289,6 +400,9 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
 
       // --- response_done: finalise the assistant message and reset state ---
       response_done: () => {
+        const doneConversationId =
+          selectedConversation?.ID || activeStreamRef.current?.conversationId;
+
         if (selectedConversation && activeMessageIdRef.current) {
           const thinkingTime =
             thinkingStartTime && thinkingEndTime
@@ -302,11 +416,15 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
             finalThinking || pendingThinkingRef.current || null,
             thinkingTime,
           );
+          void getConversation(selectedConversation.ID);
         } else if (selectedConversation && responseContentRef.current && !activeMessageIdRef.current) {
           // Edge case: response_done arrived without any response_chunk (e.g. empty generation)
           // Nothing to persist on the frontend side.
+          void getConversation(selectedConversation.ID);
         }
 
+        if (doneConversationId) clearActiveStreamState(doneConversationId);
+        activeStreamRef.current = null;
         resetGenerationState();
         setCurrentThinking("");
         setFinalThinking(null);
@@ -350,7 +468,10 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
 
       // --- interrupt ---
       interrupt_ack: () => {
-        resetGenerationState();
+        if (!activeStreamRef.current) {
+          resetGenerationState();
+        }
+        setIsThinking(false);
         setCurrentThinking("");
         setFinalThinking(null);
       },
@@ -420,6 +541,10 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
       // --- errors ---
       error: (errorMsg: string) => {
         console.error("WS error:", errorMsg);
+        const conversationId =
+          activeStreamRef.current?.conversationId || selectedConversation?.ID;
+        if (conversationId) clearActiveStreamState(conversationId);
+        activeStreamRef.current = null;
         resetGenerationState();
       },
     };
@@ -443,6 +568,7 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
     createNewConversation,
     updateMessageContent,
     updateMessageWithThinking,
+    getConversation,
     resetGenerationState,
     getUseCaseFromPath,
     navigate,
@@ -504,15 +630,30 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
   );
 
   const resumeConversation = useCallback(async (conversationId: number) => {
-    const success = await wsService.resumeConversation(conversationId);
+    const streamState = readActiveStreamState(conversationId);
+    const success = await wsService.resumeConversation(
+      conversationId,
+      streamState?.messageId,
+      streamState?.messageId ? "0-0" : undefined,
+    );
     if (!success) {
       console.error("Failed to resume conversation");
+      return;
+    }
+
+    if (streamState?.messageId) {
+      activeStreamRef.current = streamState;
+      setIsThinking(true);
+      setIsGenerating(true);
+      isGeneratingRef.current = true;
+      responseContentRef.current = "";
+      activeMessageIdRef.current = streamState.assistantMessageId || null;
     }
   }, []);
 
   const interruptGeneration = useCallback(() => {
     if (!isGeneratingRef.current) return;
-    wsService.sendInterrupt();
+    wsService.sendInterrupt(activeStreamRef.current?.messageId);
   }, []);
 
   const clearThinkingState = useCallback(() => {
@@ -520,18 +661,6 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
     setFinalThinking(null);
     setThinkingStartTime(null);
     setThinkingEndTime(null);
-  }, []);
-
-  // ---------------------------------------------------------------------------
-  // Interrupt on page unload
-  // ---------------------------------------------------------------------------
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (isGeneratingRef.current) wsService.sendInterrupt();
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
   // ---------------------------------------------------------------------------
