@@ -12,7 +12,7 @@ format-backend:
 run-backend:
     #!/usr/bin/env bash
     cd backend && uv sync --quiet && PYTHONPATH=src uv run python -m app.main
-    
+
 # Check the backend
 check-backend:
     #!/usr/bin/env bash
@@ -22,4 +22,4 @@ install-frontend:
     cd frontend && npm install
 #run frontend
 run-frontend:
-    cd frontend && npm run dev
+    cd frontend && npm run dev -- --host 0.0.0.0
