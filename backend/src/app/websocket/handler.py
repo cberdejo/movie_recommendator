@@ -379,6 +379,10 @@ async def _start_relay(
     message_id: str,
     from_id: str,
 ) -> None:
+    # Always stop any previous relay first. Otherwise (e.g. resume_conversation
+    # on the same convo) the old task keeps XREAD-ing and the client gets every
+    # chunk twice — looks like "HelloHello" in the UI.
+    await session.cancel_relay()
     session.relay_task = asyncio.create_task(
         relay_stream_to_websocket(
             websocket=websocket,

@@ -416,11 +416,12 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
             finalThinking || pendingThinkingRef.current || null,
             thinkingTime,
           );
-          void getConversation(selectedConversation.ID);
+          // Force refresh to get the real message IDs from the backend
+          void getConversation(selectedConversation.ID, true);
         } else if (selectedConversation && responseContentRef.current && !activeMessageIdRef.current) {
           // Edge case: response_done arrived without any response_chunk (e.g. empty generation)
           // Nothing to persist on the frontend side.
-          void getConversation(selectedConversation.ID);
+          void getConversation(selectedConversation.ID, true);
         }
 
         if (doneConversationId) clearActiveStreamState(doneConversationId);
@@ -634,7 +635,7 @@ const WebSocketProvider = ({ children }: WebSocketProviderProps) => {
     const success = await wsService.resumeConversation(
       conversationId,
       streamState?.messageId,
-      streamState?.messageId ? "0-0" : undefined,
+      streamState?.lastStreamId || undefined,
     );
     if (!success) {
       console.error("Failed to resume conversation");

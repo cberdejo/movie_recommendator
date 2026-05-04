@@ -13,7 +13,7 @@ interface ConversationStore {
 
   // Actions
   fetchInitialData: (useCase?: string) => Promise<void>;
-  getConversation: (id: number) => Promise<void>;
+  getConversation: (id: number, forceRefresh?: boolean) => Promise<void>;
   addMessageToConversation: (
     conversationId: number,
     message: MessageType
@@ -77,16 +77,17 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
     }
   },
 
-  getConversation: async (id: number) => {
+  getConversation: async (id: number, forceRefresh = false) => {
     set({ isMessagesLoading: true, error: null });
-    console.log("GOT ID in STORE", id);
+    console.log("GOT ID in STORE", id, "forceRefresh:", forceRefresh);
 
     try {
       const existingConversation = get().conversations.find(
         (conv) => conv.ID === id
       );
 
-      if (existingConversation) {
+      // Use cache only if not forcing refresh and we have cached messages
+      if (!forceRefresh && existingConversation) {
         if (get().messages[id]) {
           set({
             selectedConversation: {

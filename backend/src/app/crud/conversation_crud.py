@@ -126,14 +126,25 @@ async def get_conversation_with_messages(
     Raises:
         SQLAlchemyError: If there is an error getting the conversation with messages.
     """
-
     stmt = (
         select(Conversation)
         .where(Conversation.id == conversation_id)
         .options(selectinload(Conversation.messages))
     )
     result = await db.exec(stmt)
-    return result.one_or_none()
+    convo = result.one_or_none()
+
+    if convo and convo.messages:
+        # Ensure chronological order: oldest first.
+        # Use id as primary sort key (autoincremental = insertion order),
+        # with created_at as tie-breaker. This avoids issues where timestamps
+        # might be out of order due to clock skew or transaction timing.
+        convo.messages = sorted(
+            convo.messages,
+            key=lambda m: (m.id or 0, m.created_at or datetime.min)
+        )
+
+    return convo
 
 
 async def get_conversation_with_messages_limited(
