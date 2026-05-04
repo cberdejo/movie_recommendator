@@ -144,12 +144,13 @@ def _retrieval_quality_ok(results: list[dict[str, Any]]) -> bool:
 async def router_node(state: AgentState) -> dict:
     """
     Classify the question into intent + media_type in one LLM call.
-    Args:
-        state: The state of the agent.
-    Returns:
-        The decision and the media type.
+
+    Runs after ``contextualize_question``: the router sees the standalone
+    rewritten query (conversation context merged), not only the raw last turn.
     """
-    question = _extract_last_human_message(state["messages"])
+    question = state.get("contextualized_question") or _extract_last_human_message(
+        state["messages"]
+    )
     prompt = ChatPromptTemplate.from_template(ROUTER_PROMPT)
     chain = prompt | llm_secondary | StrOutputParser()
     raw = await chain.ainvoke({"question": question})
@@ -170,7 +171,10 @@ async def router_node(state: AgentState) -> dict:
         log.warning("router: could not parse JSON %r, using defaults", raw)
 
     log.info(
-        "router: intent=%s  media_type=%s  question=%r", decision, media_type, question
+        "router: intent=%s  media_type=%s  contextualized_question=%r",
+        decision,
+        media_type,
+        question,
     )
     return {"decision": decision, "media_type": media_type}
 
@@ -358,12 +362,12 @@ def build_app():
     Graph topology:
                     START
                     │
+            [contextualize]
+                    │
                 [router]
                   ╱     ╲
-        CONTEXTUALIZE    |
-            |            |
-        RETRIEVE      GENERAL
-            │                ╲
+            RETRIEVE    GENERAL
+                │            ╲
         [retrieve]    [generate_general]
             ╱     ╲             │
         OK     POOR             │
@@ -371,6 +375,9 @@ def build_app():
         [generate_retrieve] [reask_user]
                 ╲        ╱        │
                     END ←─────────╯
+
+    Contextualize runs first so the router classifies a single self-contained
+    query (short follow-ups like titles after a re-ask inherit full intent).
 
     """
     workflow = StateGraph(AgentState)
@@ -382,13 +389,13 @@ def build_app():
     workflow.add_node("generate_general", generate_general)
     workflow.add_node("reask_user", reask_user)
 
-    workflow.add_edge(START, "router")
+    workflow.add_edge(START, "contextualize")
+    workflow.add_edge("contextualize", "router")
     workflow.add_conditional_edges(
         "router",
         route_decision,
-        {"retrieve": "contextualize", "generate_general": "generate_general"},
+        {"retrieve": "retrieve", "generate_general": "generate_general"},
     )
-    workflow.add_edge("contextualize", "retrieve")
     workflow.add_conditional_edges(
         "retrieve",
         route_after_retrieve,

@@ -22,13 +22,13 @@ const NODE_DEFS: Record<string, NodeDef> = {
     id: "router",
     label: "Intent Router",
     icon: GitBranch,
-    description: "Classifies query & media type",
+    description: "RETRIEVE vs GENERAL on standalone query",
   },
   contextualize: {
     id: "contextualize",
     label: "Contextualize",
     icon: ScanSearch,
-    description: "Rewrites query from chat history",
+    description: "Merges history into one query (runs first)",
   },
   retrieve: {
     id: "retrieve",
@@ -229,7 +229,10 @@ function EdgeTrunk({ active, completed, className }: { active: boolean; complete
 }
 
 function RouterSplit({ decision, pathSet }: { decision: string | null; pathSet: Set<string>; }) {
-  const leftActive  = pathSet.has("contextualize") || pathSet.has("retrieve") || pathSet.has("generate_retrieve") || pathSet.has("reask_user");
+  const leftActive =
+    pathSet.has("retrieve") ||
+    pathSet.has("generate_retrieve") ||
+    pathSet.has("reask_user");
   const rightActive = pathSet.has("generate_general");
 
   return (
@@ -277,8 +280,11 @@ const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
   const nodeStatus = (id: string): GraphNodeStatus => nodes[id]?.status ?? "idle";
   const nodeOutput = (id: string) => nodes[id]?.output;
 
-  const isRetrievePath   = pathSet.has("contextualize") || pathSet.has("retrieve") || pathSet.has("generate_retrieve") || pathSet.has("reask_user");
-  const isGeneralPath    = pathSet.has("generate_general");
+  const isRetrievePath =
+    pathSet.has("retrieve") ||
+    pathSet.has("generate_retrieve") ||
+    pathSet.has("reask_user");
+  const isGeneralPath = pathSet.has("generate_general");
   const anyTerminalDone  = pathSet.has("generate_retrieve") || pathSet.has("reask_user") || pathSet.has("generate_general");
 
   return (
@@ -320,6 +326,18 @@ const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
           </div>
 
           <EdgeLine
+            active={nodeStatus("contextualize") === "active"}
+            completed={pathSet.has("contextualize")}
+          />
+
+          <NodeCard
+            def={NODE_DEFS.contextualize}
+            status={nodeStatus("contextualize")}
+            output={nodeOutput("contextualize")}
+            isInPath={pathSet.has("contextualize") || isRunning}
+          />
+
+          <EdgeLine
             active={nodeStatus("router") === "active"}
             completed={pathSet.has("router")}
           />
@@ -335,14 +353,8 @@ const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
 
           {/* Two top-level columns */}
           <div className="grid grid-cols-[1fr_0.9fr] gap-3 relative z-10 items-stretch">
-            {/* Left: retrieve path */}
+            {/* Left: retrieve path (after router RETRIEVE) */}
             <div className="flex flex-col min-w-0">
-              <NodeCard
-                def={NODE_DEFS.contextualize}
-                status={nodeStatus("contextualize")}
-                output={nodeOutput("contextualize")}
-                isInPath={isRetrievePath}
-              />
               <EdgeLine
                 active={nodeStatus("retrieve") === "active"}
                 completed={pathSet.has("retrieve")}
@@ -379,6 +391,10 @@ const LangGraphPanel = ({ graphState, onClose }: LangGraphPanelProps) => {
 
             {/* Right: general path — trunk links Base LLM down to FinalMerge / Terminate */}
             <div className="flex flex-col min-h-0 min-w-0 h-full">
+              <EdgeLine
+                active={nodeStatus("generate_general") === "active"}
+                completed={pathSet.has("generate_general")}
+              />
               <NodeCard
                 def={NODE_DEFS.generate_general}
                 status={nodeStatus("generate_general")}

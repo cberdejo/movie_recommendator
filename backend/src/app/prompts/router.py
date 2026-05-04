@@ -3,16 +3,17 @@
 # Keep this as a plain template string so ChatPromptTemplate can inject {question}.
 ROUTER_PROMPT = """You are a strict intent classifier for a movie/series recommendation assistant.
 
-User input: "{question}"
+Standalone user query (already merged with conversation context when needed; classify this text only):
+"{question}"
 
 Respond ONLY with valid JSON using exactly these keys:
 - "intent": either "RETRIEVE" or "GENERAL"
 - "media_type": either "movie", "series", or "any"
 
 STRICT RULES (do not break these):
-1. Do NOT infer intent from context. Only use EXPLICIT words present in the user input.
-2. If no movie/series-related keywords appear, the intent MUST be "GENERAL".
-3. Do NOT assume the user means movies or series unless they explicitly say so.
+1. Base your decision ONLY on the standalone query above (it may include implied movie/series intent from prior turns, written explicitly in this sentence).
+2. If that query has no movie/series-related keywords and is not asking for watch recommendations or factual info about titles, the intent MUST be "GENERAL".
+3. Do NOT invent genres or titles not present in the query text.
 
 Keyword rules:
 - movie → only if words like: "movie", "film",..
@@ -21,8 +22,8 @@ Keyword rules:
 - If none appear → media_type MUST be "any"
 
 Intent rules:
-- RETRIEVE → only if the user explicitly mentions movie/series keywords AND is asking for recommendations, search, or information about them
-- GENERAL → everything else (including vague entertainment questions without explicit keywords)
+- RETRIEVE → the standalone query uses movie/series keywords (per rules above) AND asks for recommendations, search, or factual information about those works
+- GENERAL → everything else (e.g. math, unrelated chit-chat, or watch requests with zero movie/series keywords in the query text)
 
 Examples:
 Input: "Recommend me something to watch"

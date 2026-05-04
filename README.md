@@ -150,7 +150,7 @@ The **HybridSearcher** (`backend/src/app/services/retriever.py`) performs hybrid
 - **Fusion**: Qdrant’s **RRF (Reciprocal Rank Fusion)** combines dense and sparse results into a single ranking.
 - **Optional re-ranking**: A cross-encoder reranker can refine the top candidates (e.g. top 15 → rerank → top 5) for better relevance.
 
-The same class is used both to **index** documents (during `populate_movies_qdrant`) and to **search** at query time inside the LangGraph “retrieve” node. Configuration (model names, collection name, Qdrant URL) comes from `qdrantsettings`.
+The same class is used both to **index** documents (during `populate_movies_qdrant`) and to **search** at query time inside the LangGraph “retrieve” node. Configuration (model names, collection name, Qdrant URL) comes from `qdrant_settings`.
 
 
 ### Chat Interruption <a id="chat-interruption"></a>
@@ -179,10 +179,10 @@ The assistant is implemented as a **LangGraph** state machine in `backend/src/ap
 
 ```mermaid
 flowchart TD
-    START([Start]) --> router{router}
-    router -->|RETRIEVE| contextualize[contextualize]
+    START([Start]) --> contextualize[contextualize]
+    contextualize --> router{router}
+    router -->|RETRIEVE| retrieve[retrieve]
     router -->|GENERAL| generate_general[generate_general]
-    contextualize --> retrieve[retrieve]
     retrieve -->|scores OK or reask exhausted| generate_retrieve[generate_retrieve]
     retrieve -->|low score, reask allowed| reask_user[reask_user]
     generate_retrieve --> Finish([End])
@@ -194,8 +194,8 @@ flowchart TD
 
 | Node | Role |
 |------|------|
-| **router** | Runs first on the last user message: **RETRIEVE** (needs movies/reviews from the vector DB) or **GENERAL** (general chat, no retrieval), plus **media_type** for Qdrant filtering. Uses a secondary/smaller LLM. |
-| **contextualize** | Only on the RETRIEVE path: rewrites the message using recent chat history so it is self-contained (e.g. “make it shorter” → “make the list of recommendations shorter”). Uses the secondary LLM. |
+| **contextualize** | Runs **first** on every turn: rewrites the latest user turn plus recent chat history into one **self-contained query** (short follow-ups after a clarification inherit full intent). Uses the secondary LLM. |
+| **router** | Classifies that **standalone** query: **RETRIEVE** (needs the vector DB) or **GENERAL** (no retrieval), plus **media_type** for Qdrant filtering. Uses the secondary LLM. |
 | **retrieve** | Calls **HybridSearcher** with the contextualized question and optional rerank; sets **needs_reask** when the best score is below threshold. |
 | **generate_retrieve** | Builds the final answer from retrieved context and chat history (RAG path). |
 | **reask_user** | When retrieval quality is low and re-ask budget allows, asks the user for more specifics; otherwise the graph falls through to **generate_retrieve** (see `route_after_retrieve` in code). |
@@ -207,7 +207,7 @@ The **LangGraph panel** (e.g. `LangGraphPanel.tsx`) shows the same flow in the U
 
 - **Node cards**: One card per node (Router, Contextualize, Retrieve, Generate (RAG), Re-ask, General Answer). Each card shows an icon, label, short description, and optional **outputs** (e.g. reformulated question, decision, document count) when the backend sends `node_output` events.
 - **Status**: Each node has a status—**idle** (gray), **active** (purple, current step), **completed** (green), or **error** (red). The backend drives this via `node_start` / `node_end` and the execution path.
-- **Execution path**: A vertical layout mirrors the Mermaid flow: Start → router → on **RETRIEVE**, contextualize → retrieve → then either generate (RAG) or re-ask; on **GENERAL**, generate_general. Edges (lines/splits) are highlighted (e.g. purple when active, green when completed) so the user sees which branch is taken and which node is running.
+- **Execution path**: A vertical layout mirrors the Mermaid flow: Start → **contextualize** → **router** → on **RETRIEVE**, retrieve → then either generate (RAG) or re-ask; on **GENERAL**, generate_general. Edges (lines/splits) are highlighted (e.g. purple when active, green when completed) so the user sees which branch is taken and which node is running.
 - **Live updates**: During streaming, `graph_start` / `graph_end` and `node_start` / `node_end` / `node_output` WebSocket events update the panel so the graph animates in real time and shows the router’s decision and retrieval count without leaving the chat.
 
 
